@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+.python-version
+data/
+.chainlit/
+.streamlit/
+*.pyc
+.DS_Store
+
