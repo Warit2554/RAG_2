@@ -655,6 +655,18 @@ async def get_ollama_models() -> list[dict]:
     return []
 
 
+async def unload_ollama_model(model_name: str) -> None:
+    """Unloads the specified model from Ollama memory by sending a request with keep_alive=0."""
+    import httpx
+    try:
+        payload = {"model": model_name, "keep_alive": 0}
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            url = f"{SETTINGS.ollama_host.rstrip('/')}/api/generate"
+            await client.post(url, json=payload)
+    except Exception:
+        pass
+
+
 class CliRepl:
     def __init__(self) -> None:
         self.history: list[dict[str, str]] = []
@@ -800,6 +812,13 @@ class CliRepl:
                         theme=theme
                     )
                     selected = chat_models[idx]
+                    
+                    # Unload previous models from Ollama memory
+                    old_models = {SETTINGS.ollama_chat_model, SETTINGS.ollama_router_model, SETTINGS.ollama_orchestrator_model}
+                    for old_m in old_models:
+                        if old_m and old_m != selected:
+                            await unload_ollama_model(old_m)
+                            
                     SETTINGS.ollama_chat_model = selected
                     SETTINGS.ollama_router_model = selected
                     SETTINGS.ollama_orchestrator_model = selected
@@ -835,6 +854,12 @@ class CliRepl:
                         theme=theme
                     )
                     selected = embed_models[idx]
+                    
+                    # Unload previous embedding model from Ollama memory
+                    old_embed = SETTINGS.ollama_embed_model
+                    if old_embed and old_embed != selected:
+                        await unload_ollama_model(old_embed)
+                        
                     SETTINGS.ollama_embed_model = selected
                     save_env_setting("OLLAMA_EMBED_MODEL", selected)
                     print(f"{theme.secondary}[Embedding Selection]\033[0m Embedding model updated to: \033[1m{selected}\033[0m\n")
@@ -999,6 +1024,13 @@ class CliRepl:
             except EOFError:
                 print(f"\n{theme.primary}Goodbye!\033[0m")
                 break
+                
+        # Unload all active models from Ollama memory on exit
+        print(f"\n{theme.secondary}[System]\033[0m Unloading active models from Ollama memory...")
+        active_models = {SETTINGS.ollama_chat_model, SETTINGS.ollama_router_model, SETTINGS.ollama_orchestrator_model, SETTINGS.ollama_embed_model}
+        for m in active_models:
+            if m:
+                await unload_ollama_model(m)
 
 
 def main() -> None:
