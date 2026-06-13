@@ -126,16 +126,49 @@ else
 
     elif [ "$OS" = "Linux" ]; then
         if command -v apt-get &>/dev/null; then
-            echo "Detected Debian/Ubuntu. Installing Docker via apt..."
+            # Detect whether this is Debian or Ubuntu
+            DISTRO_ID="$(. /etc/os-release && echo "${ID:-ubuntu}")"
+            DISTRO_CODENAME="$(. /etc/os-release && echo "${VERSION_CODENAME:-}")"
+
+            # Normalize: Ubuntu derivatives (e.g. Linux Mint) may set ID_LIKE
+            if [ "$DISTRO_ID" != "debian" ] && [ "$DISTRO_ID" != "ubuntu" ]; then
+                DISTRO_ID="$(. /etc/os-release && echo "${ID_LIKE:-ubuntu}" | awk '{print $1}')" 
+            fi
+            # Only 'debian' or 'ubuntu' are valid repo names for Docker
+            if [ "$DISTRO_ID" != "debian" ]; then
+                DISTRO_ID="ubuntu"
+            fi
+
+            echo "Detected ${DISTRO_ID^}. Installing Docker via apt..."
+
+            # Debian testing/unstable codenames (e.g. trixie, sid) have no Docker repo yet.
+            # Fall back to the latest stable Debian release (bookworm).
+            if [ "$DISTRO_ID" = "debian" ]; then
+                STABLE_DEBIAN_CODENAMES=("bookworm" "bullseye" "buster")
+                CODENAME_OK=false
+                for cn in "${STABLE_DEBIAN_CODENAMES[@]}"; do
+                    if [ "$DISTRO_CODENAME" = "$cn" ]; then
+                        CODENAME_OK=true
+                        break
+                    fi
+                done
+                if [ "$CODENAME_OK" = false ]; then
+                    echo -e "${YELLOW}Warning: Debian codename '$DISTRO_CODENAME' has no Docker repo. Falling back to 'bookworm'.${NC}"
+                    DISTRO_CODENAME="bookworm"
+                fi
+            fi
+
+            # Remove any stale docker.list from a previous failed run before updating
+            sudo rm -f /etc/apt/sources.list.d/docker.list
             sudo apt-get update -qq
             sudo apt-get install -y -qq ca-certificates curl gnupg
             sudo install -m 0755 -d /etc/apt/keyrings
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+            # Remove stale GPG key if present so gpg --dearmor doesn't prompt
+            sudo rm -f /etc/apt/keyrings/docker.gpg
+            curl -fsSL "https://download.docker.com/linux/${DISTRO_ID}/gpg" | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
             sudo chmod a+r /etc/apt/keyrings/docker.gpg
             echo \
-              "deb [arch=\"$(dpkg --print-architecture)\" signed-by=/etc/apt/keyrings/docker.gpg] \
-              https://download.docker.com/linux/ubuntu \
-              \"$(. /etc/os-release && echo \"$VERSION_CODENAME\")\" stable" | \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/${DISTRO_ID} ${DISTRO_CODENAME} stable" | \
               sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
             sudo apt-get update -qq
             sudo apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin
