@@ -718,264 +718,274 @@ class CliRepl:
 
         while True:
             try:
-                prompt_str = f"{theme.primary}nexus ›\033[0m "
-                query = get_user_input(prompt_str, theme, self.command_history)
-            except (KeyboardInterrupt, EOFError):
+                try:
+                    prompt_str = f"{theme.primary}nexus ›\033[0m "
+                    query = get_user_input(prompt_str, theme, self.command_history)
+                except EOFError:
+                    raise
+
+                if not query:
+                    continue
+
+                # Add to command history if it's not a duplicate of the last command
+                if not self.command_history or self.command_history[-1] != query:
+                    self.command_history.append(query)
+                    save_command_history(self.command_history)
+
+                if query in {"/exit", "/quit", "exit", "quit"}:
+                    print(f"{theme.primary}Goodbye!\033[0m")
+                    break
+
+                if query == "/clear":
+                    self.history = []
+                    print(f"{theme.secondary}[System]\033[0m Conversation history cleared.")
+                    continue
+
+                if query == "/ingest":
+                    await self.ingest()
+                    print()
+                    continue
+
+                if query == "/theme":
+                    options = [t.name for t in THEMES]
+                    current_idx = 0
+                    for idx, t in enumerate(THEMES):
+                        if t.name == theme.name:
+                            current_idx = idx
+                            break
+                            
+                    idx = interactive_select(
+                        options,
+                        "Select a new terminal theme:",
+                        default_index=current_idx,
+                        theme=theme
+                    )
+                    theme = THEMES[idx]
+                    ACTIVE_THEME = theme
+                    SETTINGS.nexus_theme = theme.name
+                    save_theme_setting(theme.name)
+                    print(f"{theme.secondary}[System]{theme.text} Theme updated to: {theme.primary}{theme.name}\033[0m\n")
+                    continue
+
+                if query == "/model":
+                    print(f"\n{theme.primary}[Model Selection]\033[0m Fetching completion models from Ollama host ({SETTINGS.ollama_host})...")
+                    models = await get_ollama_models()
+                    chat_models = []
+                    for m in models:
+                        name = m.get("name", "")
+                        caps = m.get("capabilities", [])
+                        if caps:
+                            if "completion" in caps:
+                                chat_models.append(name)
+                        else:
+                            if "embed" not in name.lower():
+                                chat_models.append(name)
+                                
+                    if not chat_models:
+                        print(f"\033[31m[Error]\033[0m No chat models found on local Ollama service.")
+                        print()
+                        continue
+                        
+                    idx = interactive_select(
+                        chat_models,
+                        "Use Arrow Up/Down & Enter to select chat model:",
+                        default_index=0,
+                        theme=theme
+                    )
+                    selected = chat_models[idx]
+                    SETTINGS.ollama_chat_model = selected
+                    print(f"{theme.secondary}[Model Selection]\033[0m Chat model updated to: \033[1m{selected}\033[0m\n")
+                    continue
+
+                if query == "/embedding":
+                    print(f"\n{theme.primary}[Embedding Selection]\033[0m Fetching embedding models from Ollama host ({SETTINGS.ollama_host})...")
+                    models = await get_ollama_models()
+                    embed_models = []
+                    for m in models:
+                        name = m.get("name", "")
+                        caps = m.get("capabilities", [])
+                        if caps:
+                            if "embedding" in caps:
+                                embed_models.append(name)
+                        else:
+                            if "embed" in name.lower():
+                                embed_models.append(name)
+                                
+                    if not embed_models:
+                        print(f"\033[31m[Error]\033[0m No embedding models found on local Ollama service.")
+                        print()
+                        continue
+                        
+                    idx = interactive_select(
+                        embed_models,
+                        "Use Arrow Up/Down & Enter to select embedding model:",
+                        default_index=0,
+                        theme=theme
+                    )
+                    selected = embed_models[idx]
+                    SETTINGS.ollama_embed_model = selected
+                    print(f"{theme.secondary}[Embedding Selection]\033[0m Embedding model updated to: \033[1m{selected}\033[0m\n")
+                    continue
+
+                if query.startswith("/interactive"):
+                    parts = query.split()
+                    if len(parts) >= 2:
+                        mode = parts[1].lower()
+                        if mode in {"strict", "timeout", "auto"}:
+                            self.interactive_mode = mode
+                            if mode == "timeout" and len(parts) >= 3:
+                                try:
+                                    self.interactive_timeout = int(parts[2])
+                                except ValueError:
+                                    pass
+                            print(f"{theme.secondary}[System]\033[0m Interactive mode set to: {mode}" + (f" (timeout={self.interactive_timeout}s)" if mode == "timeout" else ""))
+                        else:
+                            print(f"\033[31m[Error]\033[0m Invalid interactive mode. Use: strict, timeout, or auto.")
+                    else:
+                        print(f"{theme.secondary}[System]\033[0m Current interactive mode: {self.interactive_mode}" + (f" (timeout={self.interactive_timeout}s)" if self.interactive_mode == "timeout" else ""))
+                    print()
+                    continue
+
+                clarification_response = None
+                while True:
+                    current_answer.clear()
+                    first_token = True
+                    config = {
+                        "configurable": {
+                            "token_callback": on_token
+                        }
+                    }
+
+                    graph_input = {"user_input": query, "chat_history": self.history}
+                    if clarification_response:
+                        graph_input["clarification_response"] = clarification_response
+
+                    final_state = {}
+                    spinner = ThinkingSpinner(theme, "nexus is analyzing your request")
+                    spinner.start()
+                    try:
+                        async for update in APP.astream(
+                            graph_input,
+                            config=config,
+                            stream_mode="updates",
+                        ):
+                            spinner.stop()
+                            if "plan" in update:
+                                data = update["plan"]
+                                plan = data.get("plan")
+                                if plan and plan.tasks:
+                                    for t in plan.tasks:
+                                        print(f"{theme.secondary}[Tool]\033[0m Running {t.kind} task: {t.query}")
+                            elif "retrieve" in update:
+                                print(f"{theme.secondary}[Tool]\033[0m Running retrieve task: Searching indexed workspace files")
+                            elif "synthesize" in update:
+                                synth_data = update["synthesize"]
+                                if not synth_data.get("clarification_prompt"):
+                                    final_ans = synth_data.get("final_answer", "")
+                                    if final_ans and not current_answer:
+                                        print(f"\n\n{theme.text}{final_ans}\033[0m")
+                                        current_answer.append(final_ans)
+
+                            for node_name, node_state in update.items():
+                                final_state.update(node_state)
+
+                            # Update spinner message based on current stage of the graph
+                            if "plan" in update:
+                                spinner.message = "nexus is executing tool plan"
+                            elif "retrieve" in update:
+                                spinner.message = "nexus is synthesizing response"
+                            else:
+                                spinner.message = "nexus is thinking"
+
+                            if first_token:
+                                spinner.start()
+
+                    except Exception as e:
+                        spinner.stop()
+                        print(f"\n\033[31m[Error] Pipeline failure:\033[0m {e}\n")
+                        break
+                    finally:
+                        spinner.stop()
+
+                    prompt = final_state.get("clarification_prompt")
+                    if prompt and not clarification_response:
+                        current_answer.clear()
+
+                        if self.interactive_mode == "auto":
+                            default_path = prompt["paths"][prompt["default_index"]]
+                            print(f"\n{theme.secondary}[Interactive]\033[0m (Auto Mode) Automatically selecting default path: {default_path}")
+                            clarification_response = default_path
+                            continue
+
+                        # If timeout mode is active, fallback to input with timeout
+                        if self.interactive_mode == "timeout":
+                            print(f"\n{theme.primary}[Interactive Clarification]\033[0m {prompt['question']}")
+                            for idx, option in enumerate(prompt["options"], start=1):
+                                rec = " (Most Recommended)" if (idx - 1) == prompt["default_index"] else ""
+                                print(f" {idx}){rec} {option}")
+                            print(f" 3) Enter custom answer")
+
+                            print(f"Please choose (1-3) within {self.interactive_timeout}s [Default is 1]: ", end="", flush=True)
+                            user_choice = _get_input_with_timeout(self.interactive_timeout)
+                            if user_choice is None:
+                                print(f"\n{theme.secondary}[Interactive]\033[0m Timeout reached. Auto-selecting Option 1.")
+                                user_choice = "1"
+                            
+                            if not user_choice:
+                                user_choice = "1"
+
+                            if user_choice == "1":
+                                clarification_response = prompt["paths"][0]
+                            elif user_choice == "2":
+                                clarification_response = prompt["paths"][1]
+                            else:
+                                if user_choice == "3":
+                                    custom_path = input("Enter custom absolute path: ").strip()
+                                else:
+                                    custom_path = user_choice.strip()
+                                clarification_response = custom_path
+                        else:
+                            # Otherwise, display beautiful Arrow Up/Down selection
+                            opts = []
+                            for idx, option in enumerate(prompt["options"]):
+                                rec = " (Most Recommended)" if idx == prompt.get("default_index", 0) else ""
+                                opts.append(f"{option}{rec}")
+                            opts.append("Enter custom answer")
+
+                            selected_idx = interactive_select(
+                                opts,
+                                f"[Interactive Clarification] {prompt['question']}",
+                                default_index=prompt.get("default_index", 0),
+                                theme=theme
+                            )
+
+                            if selected_idx < len(prompt["options"]):
+                                clarification_response = prompt["paths"][selected_idx]
+                            else:
+                                custom_path = input("Enter custom absolute path: ").strip()
+                                clarification_response = custom_path
+
+                        print(f"{theme.secondary}[Interactive]\033[0m Selected: {clarification_response}")
+                        continue
+                    else:
+                        break
+
+                # Append completed exchange to history
+                answer_text = "".join(current_answer).strip()
+                if answer_text and not final_state.get("clarification_prompt"):
+                    self.history.append({"role": "user", "content": query})
+                    self.history.append({"role": "assistant", "content": answer_text})
+                print("\n")
+
+            except KeyboardInterrupt:
+                if spinner:
+                    spinner.stop()
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+                continue
+            except EOFError:
                 print(f"\n{theme.primary}Goodbye!\033[0m")
                 break
-
-            if not query:
-                continue
-
-            # Add to command history if it's not a duplicate of the last command
-            if not self.command_history or self.command_history[-1] != query:
-                self.command_history.append(query)
-                save_command_history(self.command_history)
-
-            if query in {"/exit", "/quit", "exit", "quit"}:
-                print(f"{theme.primary}Goodbye!\033[0m")
-                break
-
-            if query == "/clear":
-                self.history = []
-                print(f"{theme.secondary}[System]\033[0m Conversation history cleared.")
-                continue
-
-            if query == "/ingest":
-                await self.ingest()
-                print()
-                continue
-
-            if query == "/theme":
-                options = [t.name for t in THEMES]
-                current_idx = 0
-                for idx, t in enumerate(THEMES):
-                    if t.name == theme.name:
-                        current_idx = idx
-                        break
-                        
-                idx = interactive_select(
-                    options,
-                    "Select a new terminal theme:",
-                    default_index=current_idx,
-                    theme=theme
-                )
-                theme = THEMES[idx]
-                ACTIVE_THEME = theme
-                SETTINGS.nexus_theme = theme.name
-                save_theme_setting(theme.name)
-                print(f"{theme.secondary}[System]{theme.text} Theme updated to: {theme.primary}{theme.name}\033[0m\n")
-                continue
-
-            if query == "/model":
-                print(f"\n{theme.primary}[Model Selection]\033[0m Fetching completion models from Ollama host ({SETTINGS.ollama_host})...")
-                models = await get_ollama_models()
-                chat_models = []
-                for m in models:
-                    name = m.get("name", "")
-                    caps = m.get("capabilities", [])
-                    if caps:
-                        if "completion" in caps:
-                            chat_models.append(name)
-                    else:
-                        if "embed" not in name.lower():
-                            chat_models.append(name)
-                            
-                if not chat_models:
-                    print(f"\033[31m[Error]\033[0m No chat models found on local Ollama service.")
-                    print()
-                    continue
-                    
-                idx = interactive_select(
-                    chat_models,
-                    "Use Arrow Up/Down & Enter to select chat model:",
-                    default_index=0,
-                    theme=theme
-                )
-                selected = chat_models[idx]
-                SETTINGS.ollama_chat_model = selected
-                print(f"{theme.secondary}[Model Selection]\033[0m Chat model updated to: \033[1m{selected}\033[0m\n")
-                continue
-
-            if query == "/embedding":
-                print(f"\n{theme.primary}[Embedding Selection]\033[0m Fetching embedding models from Ollama host ({SETTINGS.ollama_host})...")
-                models = await get_ollama_models()
-                embed_models = []
-                for m in models:
-                    name = m.get("name", "")
-                    caps = m.get("capabilities", [])
-                    if caps:
-                        if "embedding" in caps:
-                            embed_models.append(name)
-                    else:
-                        if "embed" in name.lower():
-                            embed_models.append(name)
-                            
-                if not embed_models:
-                    print(f"\033[31m[Error]\033[0m No embedding models found on local Ollama service.")
-                    print()
-                    continue
-                    
-                idx = interactive_select(
-                    embed_models,
-                    "Use Arrow Up/Down & Enter to select embedding model:",
-                    default_index=0,
-                    theme=theme
-                )
-                selected = embed_models[idx]
-                SETTINGS.ollama_embed_model = selected
-                print(f"{theme.secondary}[Embedding Selection]\033[0m Embedding model updated to: \033[1m{selected}\033[0m\n")
-                continue
-
-            if query.startswith("/interactive"):
-                parts = query.split()
-                if len(parts) >= 2:
-                    mode = parts[1].lower()
-                    if mode in {"strict", "timeout", "auto"}:
-                        self.interactive_mode = mode
-                        if mode == "timeout" and len(parts) >= 3:
-                            try:
-                                self.interactive_timeout = int(parts[2])
-                            except ValueError:
-                                pass
-                        print(f"{theme.secondary}[System]\033[0m Interactive mode set to: {mode}" + (f" (timeout={self.interactive_timeout}s)" if mode == "timeout" else ""))
-                    else:
-                        print(f"\033[31m[Error]\033[0m Invalid interactive mode. Use: strict, timeout, or auto.")
-                else:
-                    print(f"{theme.secondary}[System]\033[0m Current interactive mode: {self.interactive_mode}" + (f" (timeout={self.interactive_timeout}s)" if self.interactive_mode == "timeout" else ""))
-                print()
-                continue
-
-            clarification_response = None
-            while True:
-                current_answer.clear()
-                first_token = True
-                config = {
-                    "configurable": {
-                        "token_callback": on_token
-                    }
-                }
-
-                graph_input = {"user_input": query, "chat_history": self.history}
-                if clarification_response:
-                    graph_input["clarification_response"] = clarification_response
-
-                final_state = {}
-                spinner = ThinkingSpinner(theme, "nexus is analyzing your request")
-                spinner.start()
-                try:
-                    async for update in APP.astream(
-                        graph_input,
-                        config=config,
-                        stream_mode="updates",
-                    ):
-                        spinner.stop()
-                        if "plan" in update:
-                            data = update["plan"]
-                            plan = data.get("plan")
-                            if plan and plan.tasks:
-                                for t in plan.tasks:
-                                    print(f"{theme.secondary}[Tool]\033[0m Running {t.kind} task: {t.query}")
-                        elif "retrieve" in update:
-                            print(f"{theme.secondary}[Tool]\033[0m Running retrieve task: Searching indexed workspace files")
-                        elif "synthesize" in update:
-                            synth_data = update["synthesize"]
-                            if not synth_data.get("clarification_prompt"):
-                                final_ans = synth_data.get("final_answer", "")
-                                if final_ans and not current_answer:
-                                    print(f"\n\n{theme.text}{final_ans}\033[0m")
-                                    current_answer.append(final_ans)
-
-                        for node_name, node_state in update.items():
-                            final_state.update(node_state)
-
-                        # Update spinner message based on current stage of the graph
-                        if "plan" in update:
-                            spinner.message = "nexus is executing tool plan"
-                        elif "retrieve" in update:
-                            spinner.message = "nexus is synthesizing response"
-                        else:
-                            spinner.message = "nexus is thinking"
-
-                        if first_token:
-                            spinner.start()
-
-                except Exception as e:
-                    spinner.stop()
-                    print(f"\n\033[31m[Error] Pipeline failure:\033[0m {e}\n")
-                    break
-                finally:
-                    spinner.stop()
-
-                prompt = final_state.get("clarification_prompt")
-                if prompt and not clarification_response:
-                    current_answer.clear()
-
-                    if self.interactive_mode == "auto":
-                        default_path = prompt["paths"][prompt["default_index"]]
-                        print(f"\n{theme.secondary}[Interactive]\033[0m (Auto Mode) Automatically selecting default path: {default_path}")
-                        clarification_response = default_path
-                        continue
-
-                    # If timeout mode is active, fallback to input with timeout
-                    if self.interactive_mode == "timeout":
-                        print(f"\n{theme.primary}[Interactive Clarification]\033[0m {prompt['question']}")
-                        for idx, option in enumerate(prompt["options"], start=1):
-                            rec = " (Most Recommended)" if (idx - 1) == prompt["default_index"] else ""
-                            print(f" {idx}){rec} {option}")
-                        print(f" 3) Enter custom answer")
-
-                        print(f"Please choose (1-3) within {self.interactive_timeout}s [Default is 1]: ", end="", flush=True)
-                        user_choice = _get_input_with_timeout(self.interactive_timeout)
-                        if user_choice is None:
-                            print(f"\n{theme.secondary}[Interactive]\033[0m Timeout reached. Auto-selecting Option 1.")
-                            user_choice = "1"
-                        
-                        if not user_choice:
-                            user_choice = "1"
-
-                        if user_choice == "1":
-                            clarification_response = prompt["paths"][0]
-                        elif user_choice == "2":
-                            clarification_response = prompt["paths"][1]
-                        else:
-                            if user_choice == "3":
-                                custom_path = input("Enter custom absolute path: ").strip()
-                            else:
-                                custom_path = user_choice.strip()
-                            clarification_response = custom_path
-                    else:
-                        # Otherwise, display beautiful Arrow Up/Down selection
-                        opts = []
-                        for idx, option in enumerate(prompt["options"]):
-                            rec = " (Most Recommended)" if idx == prompt.get("default_index", 0) else ""
-                            opts.append(f"{option}{rec}")
-                        opts.append("Enter custom answer")
-
-                        selected_idx = interactive_select(
-                            opts,
-                            f"[Interactive Clarification] {prompt['question']}",
-                            default_index=prompt.get("default_index", 0),
-                            theme=theme
-                        )
-
-                        if selected_idx < len(prompt["options"]):
-                            clarification_response = prompt["paths"][selected_idx]
-                        else:
-                            custom_path = input("Enter custom absolute path: ").strip()
-                            clarification_response = custom_path
-
-                    print(f"{theme.secondary}[Interactive]\033[0m Selected: {clarification_response}")
-                    continue
-                else:
-                    break
-
-            # Append completed exchange to history
-            answer_text = "".join(current_answer).strip()
-            if answer_text and not final_state.get("clarification_prompt"):
-                self.history.append({"role": "user", "content": query})
-                self.history.append({"role": "assistant", "content": answer_text})
-            print("\n")
 
 
 def main() -> None:
