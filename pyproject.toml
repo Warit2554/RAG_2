@@ -15,13 +15,13 @@ dependencies = [
   "pydantic>=2.7.0",
   "qdrant-client>=1.11.0",
   "rank-bm25>=0.2.2",
-  "textual>=0.78.0",
   "tree-sitter>=0.22.0",
   "typing_extensions>=4.12.0",
 ]
 
+
 [project.scripts]
-rag-local = "rag_local.cli:main"
+nexus = "rag_local.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["rag_local*"]

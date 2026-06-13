@@ -6,6 +6,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from rag_local.config import SETTINGS
+
 
 @dataclass(slots=True)
 class SandboxResult:
@@ -29,6 +31,8 @@ def run_python_in_docker(code: str, *, timeout_seconds: int = 20) -> SandboxResu
         workdir = Path(tmp)
         script = workdir / "main.py"
         script.write_text(code, encoding="utf-8")
+        
+        repo_dir = SETTINGS.rag_data_dir.resolve()
         cmd = [
             docker,
             "run",
@@ -48,6 +52,8 @@ def run_python_in_docker(code: str, *, timeout_seconds: int = 20) -> SandboxResu
             "/tmp:rw,exec,nosuid,size=64m",
             "--volume",
             f"{tmp}:/workspace:rw",
+            "--volume",
+            f"{repo_dir}:/repo:ro",
             "-w",
             "/workspace",
             "python:3.11-slim",
@@ -61,4 +67,3 @@ def run_python_in_docker(code: str, *, timeout_seconds: int = 20) -> SandboxResu
             stderr=completed.stderr,
             exit_code=completed.returncode,
         )
-

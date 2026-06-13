@@ -25,6 +25,7 @@ class OllamaClient:
         temperature: float = 0.2,
         keep_alive: str | None = None,
         stream: bool = False,
+        format: str | None = None,
     ) -> str | httpx.Response:
         payload = {
             "model": model,
@@ -34,6 +35,8 @@ class OllamaClient:
         }
         if keep_alive:
             payload["keep_alive"] = keep_alive
+        if format:
+            payload["format"] = format
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             if stream:
                 return await client.post(self._url("/api/chat"), json=payload)
@@ -49,6 +52,7 @@ class OllamaClient:
         *,
         temperature: float = 0.2,
         keep_alive: str | None = None,
+        format: str | None = None,
     ):
         payload = {
             "model": model,
@@ -58,6 +62,8 @@ class OllamaClient:
         }
         if keep_alive:
             payload["keep_alive"] = keep_alive
+        if format:
+            payload["format"] = format
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             async with client.stream("POST", self._url("/api/chat"), json=payload) as response:
                 response.raise_for_status()

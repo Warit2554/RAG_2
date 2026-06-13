@@ -1,2 +1,2 @@
 [console_scripts]
-rag-local = rag_local.cli:main
+nexus = rag_local.cli:main

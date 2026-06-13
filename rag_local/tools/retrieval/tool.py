@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -15,9 +17,10 @@ from qdrant_client.models import (
 )
 from rank_bm25 import BM25Okapi
 
-from .config import SETTINGS
-from .types import ChunkRecord, SearchHit
-from .utils import normalize_scores, read_text
+from rag_local.config import SETTINGS
+from rag_local.embed import OllamaClient
+from rag_local.types import ChunkRecord, SearchHit
+from rag_local.utils import normalize_scores, read_text
 
 
 @dataclass(slots=True)
@@ -43,12 +46,10 @@ class QdrantStore:
         if client:
             self.client = client
         else:
-            import httpx
             use_local = False
             if "localhost" in SETTINGS.qdrant_url or "127.0.0.1" in SETTINGS.qdrant_url:
                 try:
                     with httpx.Client(timeout=1.0) as check_client:
-                        # Qdrant readyz check
                         resp = check_client.get(SETTINGS.qdrant_url.rstrip("/") + "/readyz")
                         if resp.status_code != 200:
                             use_local = True
@@ -204,5 +205,18 @@ class QdrantStore:
 
 
 def _tokenize(text: str) -> list[str]:
-    import re
     return re.findall(r'[a-zA-Z0-9_]+', text.lower())
+
+
+@dataclass(slots=True)
+class RetrievalResult:
+    query: str
+    hits: list[SearchHit]
+
+
+async def hybrid_retrieve(query: str, *, top_k: int | None = None) -> RetrievalResult:
+    client = OllamaClient()
+    store = QdrantStore()
+    embedding = (await client.embed(SETTINGS.ollama_embed_model, [query]))[0]
+    hits = store.hybrid_search(query, embedding, top_k=top_k or SETTINGS.rag_top_k)
+    return RetrievalResult(query=query, hits=hits)

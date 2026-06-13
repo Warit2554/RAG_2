@@ -26,11 +26,9 @@ UI Frameworks:
 
 GUI: Chainlit (Designed specifically to visualize Agent thought processes and steps; better suited for this than Streamlit).
 
-CLI: Textual (For displaying terminal dashboards and system logs).
-
 2. Local Architecture Diagram
 
-                                [ User (Chainlit GUI / Textual CLI) ]
+                                    [ User (Chainlit GUI) ]
                                                 |
                                                 v
 +-----------------------------------------------------------------------------------------------+
@@ -112,17 +110,13 @@ Implement a Fan-out/Fan-in pattern: ensure all workers complete their tasks befo
 
 Compile Graph: Execute app = graph.compile().
 
-Phase 4: GUI and CLI Development
+Phase 4: GUI Development
 
 GUI with Chainlit:
 
 Develop an app.py script using Chainlit, integrating the compiled LangGraph application.
 
 Chainlit will provide a ChatGPT-like interface and display real-time execution steps (e.g., showing when the system is routing, orchestrating, or running 3 parallel agents).
-
-CLI with Textual:
-
-Create an admin dashboard to monitor system resources (like Ollama VRAM usage in real-time) and stream LangGraph execution logs directly in the terminal.
 
 4. Pro Tips for Local Execution
 

@@ -7,7 +7,6 @@ This repo implements a fully local router-orchestrator RAG system with:
 - Qdrant for vector storage
 - Tree-sitter-style AST-aware chunking with a Python AST fast path and text fallback
 - Chainlit for chat UI
-- Textual for a terminal dashboard
 - Optional local web search through SearxNG
 - Optional Python code execution in an isolated Docker container
 
@@ -52,30 +51,34 @@ docker compose up -d
 
 5. Start optional SearxNG if you want web search.
 
+## Installation & Setup
+
+Set up the environment, install dependencies, and build the command-line tool on Linux/macOS:
+
+```bash
+./setup_nexus.sh
+```
+
+Follow the output instructions of the script to export the virtual environment's bin folder to your shell's `PATH`.
+
 ## Usage
 
-Ingest a directory:
+Run the interactive CLI REPL chat loop by typing:
 
 ```bash
-rag-local ingest .
+nexus
 ```
+*(Or run `.venv/bin/nexus` directly)*
 
-Ask from the terminal:
-
-```bash
-rag-local query "Summarize the main architecture in this repository"
-```
+Inside the REPL, you can type your questions to chat with your files. It supports the following slash commands:
+- `/ingest` - Re-indexes the current directory into Qdrant
+- `/clear` - Clears the current conversation history
+- `/exit` or `/quit` - Exits the interactive chat session
 
 Run the Chainlit UI:
 
 ```bash
-chainlit run rag_local/ui_chainlit.py
-```
-
-Run the Textual dashboard:
-
-```bash
-rag-local dashboard
+chainlit run rag_local/ui/chainlit.py
 ```
 
 ## Notes

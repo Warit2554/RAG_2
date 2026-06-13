@@ -7,7 +7,7 @@ from typing import Iterable
 from .chunking import split_source
 from .config import SETTINGS
 from .embed import OllamaClient
-from .store import QdrantStore
+from rag_local.tools.retrieval.tool import QdrantStore
 from .types import ChunkingOptions
 from .utils import detect_language
 

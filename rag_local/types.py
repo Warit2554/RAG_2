@@ -43,7 +43,7 @@ class RouteDecision(BaseModel):
 
 class PlanTask(BaseModel):
     name: str
-    kind: Literal["retrieve", "code", "web"]
+    kind: Literal["retrieve", "code", "web", "scrape", "git", "download"]
     query: str
     priority: int = 0
 
@@ -74,6 +74,8 @@ class RagState(BaseModel):
     final_answer: str = ""
     chat_history: list[dict[str, str]] = Field(default_factory=list)
     diagnostics: list[str] = Field(default_factory=list)
+    clarification_prompt: dict[str, Any] | None = None
+    clarification_response: str | None = None
 
 
 @dataclass(slots=True)
