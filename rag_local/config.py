@@ -27,6 +27,7 @@ class Settings:
     rag_max_chunk_tokens: int = int(_env("RAG_MAX_CHUNK_TOKENS", "320"))
     rag_top_k: int = int(_env("RAG_TOP_K", "5"))
     rag_keep_alive: str = _env("RAG_KEEP_ALIVE", "1h")
+    nexus_theme: str = _env("NEXUS_THEME", "Classic Theme")
 
     @property
     def index_dir(self) -> Path:

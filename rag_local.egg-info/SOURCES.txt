@@ -28,4 +28,3 @@ rag_local/tools/image_downloader/tool.py
 rag_local/tools/retrieval/tool.py
 rag_local/tools/web_scraper/tool.py
 rag_local/tools/web_search/tool.py
-rag_local/ui/chainlit.py
