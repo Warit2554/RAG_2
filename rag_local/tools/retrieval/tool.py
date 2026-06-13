@@ -67,6 +67,27 @@ class QdrantStore:
 
     def ensure_collection(self, vector_size: int) -> None:
         existing = {c.name for c in self.client.get_collections().collections}
+        if self.collection in existing:
+            try:
+                info = self.client.get_collection(collection_name=self.collection)
+                vectors_config = info.config.params.vectors
+                if hasattr(vectors_config, "size"):
+                    current_size = vectors_config.size
+                elif isinstance(vectors_config, dict) and "size" in vectors_config:
+                    current_size = vectors_config["size"]
+                else:
+                    current_size = None
+                
+                if current_size is not None and current_size != vector_size:
+                    # Dimensions mismatch! Delete and recreate the collection and BM25 index
+                    self.client.delete_collection(collection_name=self.collection)
+                    existing.remove(self.collection)
+                    self.persisted.tokens = []
+                    self.persisted.chunks = []
+                    self.persisted.save()
+            except Exception:
+                pass
+
         if self.collection not in existing:
             self.client.create_collection(
                 collection_name=self.collection,

@@ -88,8 +88,8 @@ def visible_len(s: str) -> int:
     return len(re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', s))
 
 
-def save_theme_setting(theme_name: str) -> None:
-    """Saves the chosen theme variable in the local .env configuration file."""
+def save_env_setting(key: str, value: str) -> None:
+    """Saves the chosen configuration variable in the local .env configuration file."""
     env_path = Path(".env")
     if not env_path.exists():
         env_path = Path("../.env")
@@ -98,13 +98,20 @@ def save_theme_setting(theme_name: str) -> None:
             
     try:
         content = env_path.read_text(encoding="utf-8")
-        if "NEXUS_THEME=" in content:
-            new_content = re.sub(r"NEXUS_THEME=.*", f"NEXUS_THEME={theme_name}", content)
+        pattern = rf"{key}=.*"
+        replacement = f"{key}={value}"
+        if f"{key}=" in content:
+            new_content = re.sub(pattern, replacement, content)
         else:
-            new_content = content.rstrip() + f"\nNEXUS_THEME={theme_name}\n"
+            new_content = content.rstrip() + f"\n{replacement}\n"
         env_path.write_text(new_content, encoding="utf-8")
     except Exception:
         pass
+
+
+def save_theme_setting(theme_name: str) -> None:
+    """Saves the chosen theme variable in the local .env configuration file."""
+    save_env_setting("NEXUS_THEME", theme_name)
 
 
 def load_theme() -> Theme:
@@ -794,7 +801,12 @@ class CliRepl:
                     )
                     selected = chat_models[idx]
                     SETTINGS.ollama_chat_model = selected
-                    print(f"{theme.secondary}[Model Selection]\033[0m Chat model updated to: \033[1m{selected}\033[0m\n")
+                    SETTINGS.ollama_router_model = selected
+                    SETTINGS.ollama_orchestrator_model = selected
+                    save_env_setting("OLLAMA_CHAT_MODEL", selected)
+                    save_env_setting("OLLAMA_ROUTER_MODEL", selected)
+                    save_env_setting("OLLAMA_ORCHESTRATOR_MODEL", selected)
+                    print(f"{theme.secondary}[Model Selection]\033[0m Chat, Router, and Orchestrator models updated to: \033[1m{selected}\033[0m\n")
                     continue
 
                 if query == "/embedding":
@@ -824,6 +836,7 @@ class CliRepl:
                     )
                     selected = embed_models[idx]
                     SETTINGS.ollama_embed_model = selected
+                    save_env_setting("OLLAMA_EMBED_MODEL", selected)
                     print(f"{theme.secondary}[Embedding Selection]\033[0m Embedding model updated to: \033[1m{selected}\033[0m\n")
                     continue
 
