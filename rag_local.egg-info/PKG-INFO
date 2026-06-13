@@ -1,9 +1,10 @@
 Metadata-Version: 2.4
 Name: rag-local
 Version: 0.1.0
-Summary: Local router-orchestrator RAG system powered by Ollama, LangGraph, Qdrant, and Rich CLI.
+Summary: Local router-orchestrator RAG system powered by Ollama, LangGraph, Qdrant, Chainlit, and Textual.
 Requires-Python: >=3.11
 Description-Content-Type: text/markdown
+Requires-Dist: chainlit>=1.2.0
 Requires-Dist: httpx>=0.27.0
 Requires-Dist: langgraph>=0.2.0
 Requires-Dist: pydantic>=2.7.0
@@ -21,7 +22,7 @@ This repo implements a fully local router-orchestrator RAG system with:
 - Ollama for chat, routing, orchestration, and embeddings
 - Qdrant for vector storage
 - Tree-sitter-style AST-aware chunking with a Python AST fast path and text fallback
-- Interactive, styled text-based CLI REPL using Rich
+- Chainlit for chat UI
 - Optional local web search through SearxNG
 - Optional Python code execution in an isolated Docker container
 
@@ -78,21 +79,23 @@ Follow the output instructions of the script to export the virtual environment's
 
 ## Usage
 
-Run the interactive, styled text-based CLI REPL by typing:
+Run the interactive CLI REPL chat loop by typing:
 
 ```bash
 nexus
 ```
 *(Or run `.venv/bin/nexus` directly)*
 
-Inside the REPL, you can type your questions to chat with your files. It supports the following commands:
-- `/help` - Show the help screen listing all commands
-- `/ingest` - Re-indexes the current workspace directory into Qdrant
+Inside the REPL, you can type your questions to chat with your files. It supports the following slash commands:
+- `/ingest` - Re-indexes the current directory into Qdrant
 - `/clear` - Clears the current conversation history
-- `/history` - Display the conversation history scroll
-- `/status` - Show connection status of local services (Ollama, Qdrant) and configurations
-- `/interactive [mode]` - Configure path resolution mode: `strict` (interactive choices), `timeout`, or `auto` (auto-select default paths)
-- `/exit` or `/quit` - Exits the interactive session
+- `/exit` or `/quit` - Exits the interactive chat session
+
+Run the Chainlit UI:
+
+```bash
+chainlit run rag_local/ui/chainlit.py
+```
 
 ## Notes
 

@@ -235,6 +235,15 @@ class MCPClientManager:
         session = self.sessions.get(server_name)
         if not session:
             return f"Error: MCP Server '{server_name}' is not running or active."
+
+        # Resolve relative paths for filesystem server
+        if server_name == "filesystem" and arguments:
+            workspace_dir = str(Path(".").resolve())
+            for key in ["path", "source", "destination"]:
+                if key in arguments and isinstance(arguments[key], str):
+                    val = arguments[key]
+                    if val and not os.path.isabs(val):
+                        arguments[key] = os.path.abspath(os.path.join(workspace_dir, val))
         try:
             result       = await asyncio.wait_for(
                 session.call_tool(tool_name, arguments), timeout=60.0

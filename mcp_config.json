@@ -206,6 +206,12 @@
         "-m",
         "rag_local.tools.database_mcp"
       ]
+    },
+    "operations": {
+      "command": "{{PYTHON}}",
+      "args": [
+        "rag_local/tools/operations_mcp.py"
+      ]
     }
   }
 }

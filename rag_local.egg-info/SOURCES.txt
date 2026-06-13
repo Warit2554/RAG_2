@@ -10,6 +10,7 @@ rag_local/ingest.py
 rag_local/mcp_client.py
 rag_local/memory.py
 rag_local/orchestrator.py
+rag_local/prompts.py
 rag_local/router.py
 rag_local/types.py
 rag_local/utils.py

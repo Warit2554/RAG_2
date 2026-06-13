@@ -43,7 +43,7 @@ class RouteDecision(BaseModel):
 
 class PlanTask(BaseModel):
     name: str
-    kind: Literal["retrieve", "code", "web", "scrape", "git", "download"]
+    kind: Literal["retrieve", "mcp", "write", "code", "web", "scrape", "git", "download"]
     query: str
     priority: int = 0
 

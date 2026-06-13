@@ -16,6 +16,7 @@ from rag_local.tools.git_inspector.tool import run_git_command
 from rag_local.tools.image_downloader.tool import download_image, search_for_image_url
 from .types import ExecutionPlan, PlanTask, RagState, WorkerResult
 from .utils import safe_json_loads
+from .prompts import NEXUS_MCP_AUTHORITY_PROMPT
 
 
 _LOCAL_KIND_TO_MCP = {
@@ -37,6 +38,20 @@ The ONLY valid kinds are:
 
 For 'mcp' tasks, format query as a JSON object:
   {"server_name": "<server>", "tool_name": "<tool>", "arguments": {<args>}}
+
+Example Output:
+{
+  "objective": "Understand the repository",
+  "tasks": [
+    {
+      "name": "list_files",
+      "kind": "mcp",
+      "query": {"server_name": "filesystem", "tool_name": "list_directory", "arguments": {"path": "."}},
+      "priority": 1
+    }
+  ],
+  "response_style": "detailed"
+}
 
 CRITICAL RULES:
 - Use kind 'mcp' for ALL tool calls (web search, file operations, git, code, browser, etc.).
@@ -90,23 +105,21 @@ async def build_plan(state: RagState) -> ExecutionPlan:
     
     tools_prompt = ""
     if all_tools:
-        tools_prompt = "\nAvailable Dynamic MCP Tools you can run:\n"
+        tools_prompt = "\nAvailable Dynamic MCP Tools (Server -> Tool):\n"
         for t in all_tools:
             props = t.get('input_schema', {}).get('properties', {})
             req = t.get('input_schema', {}).get('required', [])
             args_hint = ", ".join(f"{k} (required)" if k in req else k for k in props.keys())
-            tools_prompt += (
-                f"- Server: {t['server_name']} | Tool: {t['name']}\n"
-                f"  Description: {t['description']}\n"
-                f"  Arguments: {{{args_hint}}}\n"
-            )
+            desc = (t.get('description') or '').replace('\n', ' ')[:60]
+            tools_prompt += f"- {t['server_name']} -> {t['name']}: {desc}... Args: {{{args_hint}}}\n"
         tools_prompt += (
             "\nTo use any of these dynamic MCP tools, you MUST set kind to 'mcp', and format 'query' as a JSON object: \n"
             "  \"query\": {\"server_name\": \"<server_name>\", \"tool_name\": \"<tool_name>\", \"arguments\": {<args>}}\n"
         )
 
     client = OllamaClient()
-    messages = build_messages(ORCHESTRATOR_SYSTEM + tools_prompt, state.user_input, compress_history(state.chat_history))
+    system_prompt = ORCHESTRATOR_SYSTEM + "\n\n" + NEXUS_MCP_AUTHORITY_PROMPT + tools_prompt
+    messages = build_messages(system_prompt, state.user_input, compress_history(state.chat_history))
     try:
         raw = await client.chat(
             SETTINGS.ollama_orchestrator_model,
@@ -272,7 +285,19 @@ async def synthesize(state: RagState, config: Any = None) -> str:
             content_lines.append(f"- {result.task_name}: {result.summary}")
     if state.general_answer:
         content_lines.append(f"General answer: {state.general_answer}")
-    messages = build_messages(SYNTHESIZER_SYSTEM, "\n".join(content_lines), state.chat_history)
+
+    from .mcp_client import mcp_manager
+    all_tools = await mcp_manager.get_all_tools()
+    tools_info = ""
+    if all_tools:
+        tools_info = "\nAvailable Dynamic MCP Tools (Server -> Tool):\n"
+        for t in all_tools:
+            desc = (t.get('description') or '').replace('\n', ' ')[:60]
+            tools_info += f"- {t['server_name']} -> {t['name']}: {desc}...\n"
+    content_lines.append(tools_info)
+
+    system_prompt = SYNTHESIZER_SYSTEM + "\n\n" + NEXUS_MCP_AUTHORITY_PROMPT
+    messages = build_messages(system_prompt, "\n".join(content_lines), state.chat_history)
     
     token_callback = None
     if config:
