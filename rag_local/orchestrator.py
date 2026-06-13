@@ -204,7 +204,10 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
         try:
             save_dir = str(SETTINGS.rag_data_dir.resolve())
             if state and state.clarification_response:
-                save_dir = state.clarification_response
+                resp = state.clarification_response.strip()
+                # Only use as save_dir if it looks like a filesystem path
+                if resp.startswith("/") or resp.startswith("~") or resp.startswith(".\\") or (len(resp) > 1 and resp[1] == ":"):
+                    save_dir = resp
             url = None
             import re
             # If the query contains a direct image URL, use it
@@ -241,9 +244,28 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
                         "", task.query, flags=re.IGNORECASE
                     ).strip() or task.query
                 url = await search_for_image_url(search_topic)
+
+                # If still no URL, retry with alternate phrasings
+                if not url:
+                    for alt_query in [f"{search_topic} photo", f"{search_topic} image", search_topic.split()[0] if search_topic.split() else search_topic]:
+                        url = await search_for_image_url(alt_query)
+                        if url:
+                            break
+
             if not url:
-                return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary="Could not find a direct image URL to download.")
+                return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary="Could not find a usable image URL after trying multiple search strategies.")
             res = await download_image(url, save_dir)
+            # If the download failed, try up to 2 more candidate URLs by re-running with a different query
+            if "Error" in res:
+                for alt_query in [f"{search_topic} stock photo", f"{search_topic} free image"]:
+                    alt_url = await search_for_image_url(alt_query)
+                    if alt_url and alt_url != url:
+                        res2 = await download_image(alt_url, save_dir)
+                        if "Success" in res2:
+                            res = res2
+                            url = alt_url
+                            break
+
             return WorkerResult(
                 task_name=task.name,
                 kind=task.kind,
