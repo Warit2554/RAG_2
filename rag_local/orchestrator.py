@@ -127,13 +127,13 @@ Answer clearly, call out uncertainty, and keep the response practical.
 """
 
 
-async def synthesize(state: RagState) -> str:
+async def synthesize(state: RagState, config: Any = None) -> str:
     client = OllamaClient()
     content_lines = [f"User request: {state.user_input}", f"Route: {state.route}", f"Plan: {state.plan.model_dump() if state.plan else {}}"]
     if state.retrieved_chunks:
         content_lines.append("Retrieved chunks:")
         for hit in state.retrieved_chunks[:5]:
-            content_lines.append(f"- {hit.title} [{hit.source_path}] {hit.summary}")
+            content_lines.append(f"- {hit.title} [{hit.source_path}]\nSummary: {hit.summary}\nContent:\n{hit.content}\n---")
     if state.code_results:
         content_lines.append("Code results:")
         for result in state.code_results:
@@ -145,19 +145,39 @@ async def synthesize(state: RagState) -> str:
     if state.general_answer:
         content_lines.append(f"General answer: {state.general_answer}")
     messages = build_messages(SYNTHESIZER_SYSTEM, "\n".join(content_lines), state.chat_history)
+    
+    token_callback = None
+    if config and isinstance(config, dict) and "configurable" in config:
+        token_callback = config["configurable"].get("token_callback")
+
     try:
-        answer = await client.chat(
-            SETTINGS.ollama_chat_model,
-            messages,
-            temperature=0.2,
-            keep_alive=SETTINGS.rag_keep_alive,
-        )
-        return answer
+        if token_callback:
+            answer = ""
+            async for token in client.chat_stream(
+                SETTINGS.ollama_chat_model,
+                messages,
+                temperature=0.2,
+                keep_alive=SETTINGS.rag_keep_alive,
+            ):
+                answer += token
+                if asyncio.iscoroutinefunction(token_callback):
+                    await token_callback(token)
+                else:
+                    token_callback(token)
+            return answer
+        else:
+            answer = await client.chat(
+                SETTINGS.ollama_chat_model,
+                messages,
+                temperature=0.2,
+                keep_alive=SETTINGS.rag_keep_alive,
+            )
+            return answer
     except Exception:
         parts = [f"Route: {state.route}"]
         if state.retrieved_chunks:
             parts.append("Local evidence:")
-            parts.extend(f"- {hit.title}: {hit.summary}" for hit in state.retrieved_chunks[:5])
+            parts.extend(f"- {hit.title}: {hit.content}" for hit in state.retrieved_chunks[:5])
         if state.code_results:
             parts.append("Code evidence:")
             parts.extend(f"- {r.task_name}: {r.summary}" for r in state.code_results)

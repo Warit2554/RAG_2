@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import chainlit as cl
 
-from .config import SETTINGS
-from .embed import OllamaClient, build_messages
-from .graph import ask
-from .memory import compress_history
-from .orchestrator import SYNTHESIZER_SYSTEM, build_plan, run_parallel_tasks
-from .router import route_query
-from .search import hybrid_retrieve
-from .types import RagState
+from rag_local.config import SETTINGS
+from rag_local.embed import OllamaClient, build_messages
+from rag_local.graph import ask
+from rag_local.memory import compress_history
+from rag_local.orchestrator import SYNTHESIZER_SYSTEM, build_plan, run_parallel_tasks
+from rag_local.router import route_query
+from rag_local.search import hybrid_retrieve
+from rag_local.types import RagState
 
 
 def _synthesis_prompt(state: RagState) -> str:
@@ -17,7 +17,7 @@ def _synthesis_prompt(state: RagState) -> str:
     if state.retrieved_chunks:
         content_lines.append("Retrieved chunks:")
         for hit in state.retrieved_chunks[:5]:
-            content_lines.append(f"- {hit.title} [{hit.source_path}] {hit.summary}")
+            content_lines.append(f"- {hit.title} [{hit.source_path}]\nSummary: {hit.summary}\nContent:\n{hit.content}\n---")
     if state.code_results:
         content_lines.append("Code results:")
         for result in state.code_results:
@@ -113,7 +113,7 @@ async def on_message(message: cl.Message) -> None:
             await answer_msg.stream_token(token)
     except Exception:
         result = await ask(message.content, history=prior_history)
-        answer = result.get("final_answer") or result.get("general_answer") or "No answer produced."
+        answer = result.get("fina    jjjl_answer") or result.get("general_answer") or "No answer produced."
         await answer_msg.stream_token(answer)
     if not answer:
         answer = "No answer produced."

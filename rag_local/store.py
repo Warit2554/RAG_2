@@ -40,7 +40,26 @@ class PersistedIndex:
 
 class QdrantStore:
     def __init__(self, client: QdrantClient | None = None) -> None:
-        self.client = client or QdrantClient(url=SETTINGS.qdrant_url)
+        if client:
+            self.client = client
+        else:
+            import httpx
+            use_local = False
+            if "localhost" in SETTINGS.qdrant_url or "127.0.0.1" in SETTINGS.qdrant_url:
+                try:
+                    with httpx.Client(timeout=1.0) as check_client:
+                        # Qdrant readyz check
+                        resp = check_client.get(SETTINGS.qdrant_url.rstrip("/") + "/readyz")
+                        if resp.status_code != 200:
+                            use_local = True
+                except Exception:
+                    use_local = True
+            if use_local:
+                local_path = SETTINGS.rag_data_dir / "qdrant_local"
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                self.client = QdrantClient(path=str(local_path))
+            else:
+                self.client = QdrantClient(url=SETTINGS.qdrant_url)
         self.collection = SETTINGS.qdrant_collection
         self.index_file = SETTINGS.index_dir / f"{self.collection}_bm25.json"
         self.persisted = PersistedIndex.load(self.index_file)
@@ -58,17 +77,19 @@ class QdrantStore:
             return
         self.ensure_collection(len(embeddings[0]))
         points = []
+        import uuid
         for chunk, vector in zip(chunks, embeddings):
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk.chunk_id))
             points.append(
                 PointStruct(
-                    id=chunk.chunk_id,
+                    id=point_id,
                     vector=vector,
                     payload=chunk.model_dump(),
                 )
             )
         self.client.upsert(collection_name=self.collection, points=points)
         for chunk in chunks:
-            self.persisted.tokens.append(_tokenize(chunk.content + " " + chunk.summary))
+            self.persisted.tokens.append(_tokenize(chunk.source_path + " " + chunk.content + " " + chunk.summary))
             self.persisted.chunks.append(chunk.model_dump())
         self.persisted.save()
 
@@ -102,14 +123,28 @@ class QdrantStore:
 
         dense_map = normalize_scores(dense_hits)
         lexical_map = normalize_scores(lexical_hits)
+        by_id = {str(chunk["chunk_id"]): chunk for chunk in self.persisted.chunks}
         fused: dict[str, float] = {}
+        query_lower = query.lower()
+        for chunk_id, chunk in by_id.items():
+            source_path = chunk["source_path"].lower()
+            filename = Path(source_path).name.lower()
+            is_match = False
+            if filename in query_lower:
+                is_match = True
+            else:
+                parts = filename.split('.')
+                if len(parts) > 1 and len(parts[0]) > 2 and parts[0] in query_lower:
+                    is_match = True
+            if is_match:
+                fused[chunk_id] = 3.0
+
         for chunk_id, score in dense_map.items():
             fused[chunk_id] = fused.get(chunk_id, 0.0) + 0.7 * score
         for chunk_id, score in lexical_map.items():
             fused[chunk_id] = fused.get(chunk_id, 0.0) + 0.3 * score
 
         ranking = sorted(fused.items(), key=lambda item: item[1], reverse=True)[:top_k]
-        by_id = {str(chunk["chunk_id"]): chunk for chunk in self.persisted.chunks}
         results: list[SearchHit] = []
         for chunk_id, score in ranking:
             payload = by_id.get(chunk_id)
@@ -169,9 +204,5 @@ class QdrantStore:
 
 
 def _tokenize(text: str) -> list[str]:
-    tokens = []
-    for token in text.lower().split():
-        cleaned = "".join(ch for ch in token if ch.isalnum() or ch == "_")
-        if cleaned:
-            tokens.append(cleaned)
-    return tokens
+    import re
+    return re.findall(r'[a-zA-Z0-9_]+', text.lower())

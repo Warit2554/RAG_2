@@ -4,6 +4,9 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+import dotenv
+dotenv.load_dotenv()
+
 
 def _env(name: str, default: str) -> str:
     value = os.getenv(name)

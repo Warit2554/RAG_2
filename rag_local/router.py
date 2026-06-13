@@ -39,8 +39,13 @@ async def route_query(query: str, history: list[dict[str, str]] | None = None) -
         )
         parsed = safe_json_loads(raw)
         parsed = parsed if isinstance(parsed, dict) else {}
+        route = parsed.get("route", "rag")
+        lower = query.lower()
+        if route == "general" and any(ind in lower for ind in [".py", ".js", ".ts", ".json", ".md", "class ", "def ", "config.py", "rag_local"]):
+            route = "code_analysis"
+        
         decision = RouteDecision(
-            route=parsed.get("route", "rag"),
+            route=route,
             confidence=float(parsed.get("confidence", 0.5)),
             reason=str(parsed.get("reason", "model-router")),
         )

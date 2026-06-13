@@ -57,8 +57,8 @@ async def execute_workers_node(state: GraphState) -> dict[str, Any]:
     return {"code_results": code_results, "web_results": web_results, "retrieved_chunks": retrieved}
 
 
-async def synthesize_node(state: GraphState) -> dict[str, Any]:
-    answer = await synthesize(RagState(**state))
+async def synthesize_node(state: GraphState, config: Any = None) -> dict[str, Any]:
+    answer = await synthesize(RagState(**state), config)
     return {"final_answer": answer}
 
 
