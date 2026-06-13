@@ -44,16 +44,17 @@ echo -e "${YELLOW}--- Docker Setup ---${NC}"
 OS="$(uname -s)"
 
 _ensure_docker_running() {
-    # Wait up to 30s for Docker daemon to be ready
-    local retries=15
+    # Wait up to 60s for Docker daemon to be ready
+    local retries=30
     echo -n "Waiting for Docker daemon"
-    while ! docker info &>/dev/null; do
+    while ! docker info &>/dev/null 2>&1; do
         sleep 2
         echo -n "."
         retries=$((retries - 1))
         if [ "$retries" -le 0 ]; then
             echo ""
-            echo -e "${RED}Docker daemon did not start in time. Start Docker Desktop manually and re-run this script.${NC}"
+            echo -e "${RED}Docker daemon did not start in time.${NC}"
+            echo "Please open Docker Desktop manually from /Applications/Docker.app and re-run this script."
             return 1
         fi
     done
@@ -61,42 +62,69 @@ _ensure_docker_running() {
     echo -e "${GREEN}✓ Docker daemon is running${NC}"
 }
 
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-    echo -e "${GREEN}✓ Docker is already installed and running${NC}"
+# ── Clean up stale Docker symlinks (from a previously uninstalled Docker Desktop) ──
+# These broken links at /usr/local/bin/docker block fresh brew installs.
+for stale_link in /usr/local/bin/docker \
+                  /usr/local/bin/docker-compose \
+                  /usr/local/bin/docker-credential-desktop \
+                  /usr/local/bin/docker-credential-osxkeychain \
+                  /usr/local/bin/kubectl.docker; do
+    if [ -L "$stale_link" ] && [ ! -e "$stale_link" ]; then
+        echo -e "${YELLOW}Removing stale Docker symlink: $stale_link${NC}"
+        sudo rm -f "$stale_link" 2>/dev/null || {
+            echo -e "${RED}Could not remove $stale_link (need sudo). Run: sudo rm -f $stale_link${NC}"
+        }
+    fi
+done
 
-elif command -v docker &>/dev/null; then
-    echo -e "${YELLOW}Docker binary found but daemon is not running.${NC}"
+# Locate the docker binary (may not be in PATH yet)
+DOCKER_BIN=""
+for candidate in "$(command -v docker 2>/dev/null)" \
+                 "/usr/local/bin/docker" \
+                 "/usr/bin/docker" \
+                 "$HOME/.docker/bin/docker"; do
+    if [ -x "$candidate" ]; then
+        DOCKER_BIN="$candidate"
+        break
+    fi
+done
+
+if [ -n "$DOCKER_BIN" ] && "$DOCKER_BIN" info &>/dev/null 2>&1; then
+    # Docker binary found AND daemon already running — nothing to do
+    echo -e "${GREEN}✓ Docker is installed and daemon is running${NC}"
+
+elif [ -n "$DOCKER_BIN" ] || [ -d "/Applications/Docker.app" ]; then
+    # Docker is installed but daemon is not running — just launch it
+    echo -e "${YELLOW}Docker is installed but the daemon is not running.${NC}"
     if [ "$OS" = "Darwin" ]; then
-        echo "Attempting to start Docker Desktop..."
-        open -a Docker 2>/dev/null || true
+        echo "Starting Docker Desktop..."
+        open -a Docker 2>/dev/null || open /Applications/Docker.app 2>/dev/null || true
         _ensure_docker_running
     else
-        echo "Attempting to start Docker service..."
+        echo "Starting Docker service..."
         sudo systemctl start docker 2>/dev/null || sudo service docker start 2>/dev/null || true
         _ensure_docker_running
     fi
 
 else
+    # Docker is truly absent — install it
+
     echo -e "${YELLOW}Docker not found. Installing...${NC}"
 
     if [ "$OS" = "Darwin" ]; then
-        # macOS — install via Homebrew (preferred)
         if ! command -v brew &>/dev/null; then
             echo -e "${RED}Homebrew is required to install Docker on macOS.${NC}"
             echo "Install Homebrew first: https://brew.sh"
-            echo "Then re-run this script."
-            echo ""
-            echo -e "${YELLOW}Alternatively, download Docker Desktop manually from: https://www.docker.com/products/docker-desktop/${NC}"
+            echo "Or download Docker Desktop manually: https://www.docker.com/products/docker-desktop/"
             exit 1
         fi
-        echo "Installing Docker Desktop via Homebrew..."
+        echo "Installing Docker Desktop via Homebrew (this may take a few minutes)..."
         brew install --cask docker
         echo "Launching Docker Desktop (please allow any system prompts)..."
         open -a Docker
         _ensure_docker_running
 
     elif [ "$OS" = "Linux" ]; then
-        # Linux — detect distro and install accordingly
         if command -v apt-get &>/dev/null; then
             echo "Detected Debian/Ubuntu. Installing Docker via apt..."
             sudo apt-get update -qq
@@ -112,7 +140,6 @@ else
             sudo apt-get update -qq
             sudo apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin
             sudo systemctl enable --now docker
-            # Allow current user to run docker without sudo
             sudo usermod -aG docker "$USER" 2>/dev/null || true
             _ensure_docker_running
 
@@ -135,6 +162,7 @@ else
         exit 1
     fi
 fi
+
 
 # ─────────────────────────────────────────────
 # 5. Pre-pull the Python sandbox image
