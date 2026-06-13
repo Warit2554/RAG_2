@@ -28,6 +28,39 @@ class Theme:
         self.accent = accent        # Highlight color (active selections)
 
 
+class ThinkingSpinner:
+    def __init__(self, theme: Theme, message: str = "nexus is thinking"):
+        self.theme = theme
+        self.message = message
+        self.frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        self.task: asyncio.Task | None = None
+        self._stop = False
+
+    async def spin(self):
+        idx = 0
+        while not self._stop:
+            frame = self.frames[idx % len(self.frames)]
+            # Print a blank line, then the spinner frame, then move cursor up 1 line to stay on prompt line
+            sys.stdout.write(f"\n\r{self.theme.secondary}{frame} {self.theme.primary}{self.message}...\033[0m\033[K\033[1A")
+            sys.stdout.flush()
+            idx += 1
+            await asyncio.sleep(0.08)
+
+    def start(self):
+        if self.task is None:
+            self._stop = False
+            self.task = asyncio.create_task(self.spin())
+
+    def stop(self):
+        self._stop = True
+        if self.task:
+            self.task.cancel()
+            self.task = None
+        # Move down to clear spinner line, move back up to clear the blank line
+        sys.stdout.write("\n\r\033[K\033[1A\033[K")
+        sys.stdout.flush()
+
+
 THEMES = [
     Theme("Dracula / Dark Theme", "\033[1;35m", "\033[38;5;212m", "\033[38;5;231m", "\033[30;48;5;141m"),
     Theme("Cyberpunk Theme", "\033[35m", "\033[36m", "\033[37m", "\033[30;43m"),
@@ -83,11 +116,56 @@ def load_theme() -> Theme:
     return THEMES[4] # Fallback to Classic Theme
 
 
+def load_command_history() -> list[str]:
+    """Loads command history from ~/.nexus_history."""
+    history_file = Path("~/.nexus_history").expanduser()
+    if history_file.exists():
+        try:
+            lines = history_file.read_text(encoding="utf-8").splitlines()
+            return [line.strip() for line in lines if line.strip()][-100:]
+        except Exception:
+            pass
+    return []
+
+
+def save_command_history(history: list[str]) -> None:
+    """Saves last 100 command history items to ~/.nexus_history."""
+    history_file = Path("~/.nexus_history").expanduser()
+    try:
+        history_file.write_text("\n".join(history[-100:]) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _get_input_with_timeout(timeout_seconds: int) -> str | None:
     ready, _, _ = select.select([sys.stdin], [], [], timeout_seconds)
     if ready:
         return sys.stdin.readline().rstrip('\r\n')
     return None
+
+
+def read_key(fd: int) -> str:
+    """Reads a keypress from standard input file descriptor, parsing ANSI sequences robustly."""
+    b = os.read(fd, 1)
+    if not b:
+        return ""
+    if b == b'\x1b':
+        # Distinguish single Escape key from arrow sequence
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if not r:
+            return "\x1b"
+        seq = b
+        b2 = os.read(fd, 1)
+        seq += b2
+        if b2 == b'[':
+            while True:
+                b_char = os.read(fd, 1)
+                seq += b_char
+                # CSI sequences terminate with a byte in range 0x40 - 0x7E
+                if 0x40 <= b_char[0] <= 0x7E:
+                    break
+        return seq.decode('utf-8', errors='ignore')
+    return b.decode('utf-8', errors='ignore')
 
 
 def get_key_sync() -> str:
@@ -99,21 +177,7 @@ def get_key_sync() -> str:
     old_settings = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        b = os.read(fd, 1)
-        if not b:
-            return ""
-        if b == b'\x1b':
-            seq = b
-            while True:
-                r, _, _ = select.select([fd], [], [], 0.05)
-                if r:
-                    seq += os.read(fd, 1)
-                    if len(seq) >= 3 and chr(seq[-1]) in "ABCDHFe~":
-                        break
-                else:
-                    break
-            return seq.decode('utf-8', errors='ignore')
-        return b.decode('utf-8', errors='ignore')
+        return read_key(fd)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -227,6 +291,7 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
     selected_idx = 0
     history_idx = len(history) if history else 0
     prompt_len = visible_len(prompt)
+    is_history_browsing = False
     
     sys.stdout.write("\r" + prompt + "\033[K")
     sys.stdout.flush()
@@ -234,23 +299,9 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
     try:
         tty.setraw(fd)
         while True:
-            b = os.read(fd, 1)
-            if not b:
+            key = read_key(fd)
+            if not key:
                 break
-            key = ""
-            if b == b'\x1b':
-                seq = b
-                while True:
-                    r, _, _ = select.select([fd], [], [], 0.05)
-                    if r:
-                        seq += os.read(fd, 1)
-                        if len(seq) >= 3 and chr(seq[-1]) in "ABCDHFe~":
-                            break
-                    else:
-                        break
-                key = seq.decode('utf-8', errors='ignore')
-            else:
-                key = b.decode('utf-8', errors='ignore')
                 
             clear_suggestions(prev_lines_drawn, prompt_len, cursor_pos)
             prev_lines_drawn = 0
@@ -261,10 +312,11 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
                 raise EOFError
             elif key in ("\r", "\n"):
                 matches = [s for s in SUGGESTIONS if s[0].startswith(buffer)] if buffer.startswith("/") else []
-                if matches:
+                if matches and not is_history_browsing:
                     buffer = matches[selected_idx][0]
                 break
             elif key == "\t":
+                is_history_browsing = False
                 matches = [s for s in SUGGESTIONS if s[0].startswith(buffer)] if buffer.startswith("/") else []
                 if matches:
                     buffer = matches[selected_idx][0]
@@ -272,6 +324,7 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
                 sys.stdout.write("\r" + prompt + buffer + "\033[K")
                 sys.stdout.flush()
             elif key in ("\x7f", "\x08"):
+                is_history_browsing = False
                 if cursor_pos > 0:
                     buffer = buffer[:cursor_pos - 1] + buffer[cursor_pos:]
                     cursor_pos -= 1
@@ -292,9 +345,10 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
                     sys.stdout.flush()
             elif key == "\x1b[A":
                 matches = [s for s in SUGGESTIONS if s[0].startswith(buffer)] if buffer.startswith("/") else []
-                if matches:
+                if matches and not is_history_browsing:
                     selected_idx = (selected_idx - 1) % min(len(matches), 5)
                 else:
+                    is_history_browsing = True
                     if history and history_idx > 0:
                         history_idx -= 1
                         buffer = history[history_idx]
@@ -303,9 +357,10 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
                         sys.stdout.flush()
             elif key == "\x1b[B":
                 matches = [s for s in SUGGESTIONS if s[0].startswith(buffer)] if buffer.startswith("/") else []
-                if matches:
+                if matches and not is_history_browsing:
                     selected_idx = (selected_idx + 1) % min(len(matches), 5)
                 else:
+                    is_history_browsing = True
                     if history and history_idx < len(history) - 1:
                         history_idx += 1
                         buffer = history[history_idx]
@@ -319,6 +374,7 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
                         sys.stdout.write("\r" + prompt + buffer + "\033[K")
                         sys.stdout.flush()
             elif len(key) == 1 and key.isprintable():
+                is_history_browsing = False
                 buffer = buffer[:cursor_pos] + key + buffer[cursor_pos:]
                 cursor_pos += 1
                 sys.stdout.write("\r" + prompt + buffer + "\033[K")
@@ -328,7 +384,7 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
                 sys.stdout.flush()
                 selected_idx = 0
 
-            if buffer.startswith("/"):
+            if buffer.startswith("/") and not is_history_browsing:
                 matches = [s for s in SUGGESTIONS if s[0].startswith(buffer)]
                 if matches:
                     prev_lines_drawn = draw_suggestions(matches, selected_idx, theme, prompt_len, cursor_pos)
@@ -357,7 +413,7 @@ async def get_ollama_models() -> list[dict]:
 class CliRepl:
     def __init__(self) -> None:
         self.history: list[dict[str, str]] = []
-        self.command_history: list[str] = []
+        self.command_history: list[str] = load_command_history()
         self.interactive_mode = "strict"
         self.interactive_timeout = 60
 
@@ -409,10 +465,13 @@ class CliRepl:
 
         current_answer = []
         first_token = True
+        spinner: ThinkingSpinner | None = None
 
         def on_token(token: str) -> None:
             nonlocal first_token
             if first_token:
+                if spinner:
+                    spinner.stop()
                 sys.stdout.write("\n\n")
                 first_token = False
             current_answer.append(token)
@@ -433,6 +492,7 @@ class CliRepl:
             # Add to command history if it's not a duplicate of the last command
             if not self.command_history or self.command_history[-1] != query:
                 self.command_history.append(query)
+                save_command_history(self.command_history)
 
             if query in {"/exit", "/quit", "exit", "quit"}:
                 print(f"{theme.primary}Goodbye!\033[0m")
@@ -563,20 +623,23 @@ class CliRepl:
                     graph_input["clarification_response"] = clarification_response
 
                 final_state = {}
+                spinner = ThinkingSpinner(theme, "nexus is analyzing your request")
+                spinner.start()
                 try:
                     async for update in APP.astream(
                         graph_input,
                         config=config,
                         stream_mode="updates",
                     ):
+                        spinner.stop()
                         if "plan" in update:
                             data = update["plan"]
                             plan = data.get("plan")
                             if plan and plan.tasks:
                                 for t in plan.tasks:
-                                    print(f"\n{theme.secondary}[Tool]\033[0m Running {t.kind} task: {t.query}")
+                                    print(f"{theme.secondary}[Tool]\033[0m Running {t.kind} task: {t.query}")
                         elif "retrieve" in update:
-                            print(f"\n{theme.secondary}[Tool]\033[0m Running retrieve task: Searching indexed workspace files")
+                            print(f"{theme.secondary}[Tool]\033[0m Running retrieve task: Searching indexed workspace files")
                         elif "synthesize" in update:
                             synth_data = update["synthesize"]
                             if not synth_data.get("clarification_prompt"):
@@ -588,9 +651,23 @@ class CliRepl:
                         for node_name, node_state in update.items():
                             final_state.update(node_state)
 
+                        # Update spinner message based on current stage of the graph
+                        if "plan" in update:
+                            spinner.message = "nexus is executing tool plan"
+                        elif "retrieve" in update:
+                            spinner.message = "nexus is synthesizing response"
+                        else:
+                            spinner.message = "nexus is thinking"
+
+                        if first_token:
+                            spinner.start()
+
                 except Exception as e:
+                    spinner.stop()
                     print(f"\n\033[31m[Error] Pipeline failure:\033[0m {e}\n")
                     break
+                finally:
+                    spinner.stop()
 
                 prompt = final_state.get("clarification_prompt")
                 if prompt and not clarification_response:
