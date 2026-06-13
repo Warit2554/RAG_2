@@ -20,10 +20,10 @@ from .prompts import NEXUS_MCP_AUTHORITY_PROMPT
 
 
 _LOCAL_KIND_TO_MCP = {
-    "web": {"server_name": "duckduckgo", "tool_name": "duckduckgo_search"},
+    "web": {"server_name": "duckduckgo", "tool_name": "search"},
     "scrape": {"server_name": "fetch", "tool_name": "fetch"},
-    "git": {"server_name": "git", "tool_name": "status"},
-    "code": {"server_name": "desktop-commander", "tool_name": "execute_command"},
+    "git": {"server_name": "git", "tool_name": "git_status"},
+    "code": {"server_name": "operations", "tool_name": "execute_operational_command"},
     "write": {"server_name": "filesystem", "tool_name": "write_file"},
     "download": {"server_name": "filesystem", "tool_name": "write_file"},
 }
@@ -98,6 +98,15 @@ def _normalize_kind(kind: str, query: str) -> str:
     return "web"
 
 
+ALLOWED_MCP_TOOLS = {
+    "filesystem": {"directory_tree", "list_directory", "read_file", "write_file", "search_files", "get_file_info"},
+    "git": {"git_status", "git_diff", "git_log", "git_show"},
+    "duckduckgo": {"search"},
+    "fetch": {"fetch"},
+    "operations": {"execute_operational_command"},
+}
+
+
 async def build_plan(state: RagState) -> ExecutionPlan:
     from .mcp_client import mcp_manager
     import json
@@ -107,18 +116,21 @@ async def build_plan(state: RagState) -> ExecutionPlan:
     if all_tools:
         tools_prompt = "\nAvailable Dynamic MCP Tools (Server -> Tool):\n"
         for t in all_tools:
-            props = t.get('input_schema', {}).get('properties', {})
-            req = t.get('input_schema', {}).get('required', [])
-            args_hint = ", ".join(f"{k} (required)" if k in req else k for k in props.keys())
-            desc = (t.get('description') or '').replace('\n', ' ')[:60]
-            tools_prompt += f"- {t['server_name']} -> {t['name']}: {desc}... Args: {{{args_hint}}}\n"
+            srv = t.get('server_name')
+            name = t.get('name')
+            if srv in ALLOWED_MCP_TOOLS and name in ALLOWED_MCP_TOOLS[srv]:
+                props = t.get('input_schema', {}).get('properties', {}) or {}
+                req = t.get('input_schema', {}).get('required', []) or []
+                args_hint = ", ".join(f"{k} (required)" if k in req else k for k in props.keys())
+                desc = (t.get('description') or '').replace('\n', ' ')[:60]
+                tools_prompt += f"- {srv} -> {name}: {desc} | Args: {{{args_hint}}}\n"
         tools_prompt += (
             "\nTo use any of these dynamic MCP tools, you MUST set kind to 'mcp', and format 'query' as a JSON object: \n"
             "  \"query\": {\"server_name\": \"<server_name>\", \"tool_name\": \"<tool_name>\", \"arguments\": {<args>}}\n"
         )
 
     client = OllamaClient()
-    system_prompt = ORCHESTRATOR_SYSTEM + "\n\n" + NEXUS_MCP_AUTHORITY_PROMPT + tools_prompt
+    system_prompt = ORCHESTRATOR_SYSTEM + "\n\n" + tools_prompt
     messages = build_messages(system_prompt, state.user_input, compress_history(state.chat_history))
     try:
         raw = await client.chat(
@@ -278,25 +290,21 @@ async def synthesize(state: RagState, config: Any = None) -> str:
     if state.code_results:
         content_lines.append("Code results:")
         for result in state.code_results:
-            content_lines.append(f"- {result.task_name}: {result.summary}")
+            summary = result.summary or ""
+            if len(summary) > 4000:
+                summary = summary[:4000] + "\n... [TRUNCATED due to length] ..."
+            content_lines.append(f"- {result.task_name}: {summary}")
     if state.web_results:
         content_lines.append("Web results:")
         for result in state.web_results:
-            content_lines.append(f"- {result.task_name}: {result.summary}")
+            summary = result.summary or ""
+            if len(summary) > 4000:
+                summary = summary[:4000] + "\n... [TRUNCATED due to length] ..."
+            content_lines.append(f"- {result.task_name}: {summary}")
     if state.general_answer:
         content_lines.append(f"General answer: {state.general_answer}")
 
-    from .mcp_client import mcp_manager
-    all_tools = await mcp_manager.get_all_tools()
-    tools_info = ""
-    if all_tools:
-        tools_info = "\nAvailable Dynamic MCP Tools (Server -> Tool):\n"
-        for t in all_tools:
-            desc = (t.get('description') or '').replace('\n', ' ')[:60]
-            tools_info += f"- {t['server_name']} -> {t['name']}: {desc}...\n"
-    content_lines.append(tools_info)
-
-    system_prompt = SYNTHESIZER_SYSTEM + "\n\n" + NEXUS_MCP_AUTHORITY_PROMPT
+    system_prompt = SYNTHESIZER_SYSTEM
     messages = build_messages(system_prompt, "\n".join(content_lines), state.chat_history)
     
     token_callback = None

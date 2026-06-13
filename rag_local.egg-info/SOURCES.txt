@@ -21,6 +21,7 @@ rag_local.egg-info/entry_points.txt
 rag_local.egg-info/requires.txt
 rag_local.egg-info/top_level.txt
 rag_local/tools/database_mcp.py
+rag_local/tools/operations_mcp.py
 rag_local/tools/search_fetch_mcp.py
 rag_local/tools/time_mcp.py
 rag_local/tools/code_execution/tool.py
