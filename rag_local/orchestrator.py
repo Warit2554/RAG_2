@@ -18,6 +18,15 @@ from .types import ExecutionPlan, PlanTask, RagState, WorkerResult
 from .utils import safe_json_loads
 
 
+_LOCAL_KIND_TO_MCP = {
+    "web": {"server_name": "duckduckgo", "tool_name": "duckduckgo_search"},
+    "scrape": {"server_name": "fetch", "tool_name": "fetch"},
+    "git": {"server_name": "git", "tool_name": "status"},
+    "code": {"server_name": "desktop-commander", "tool_name": "execute_command"},
+    "write": {"server_name": "filesystem", "tool_name": "write_file"},
+    "download": {"server_name": "filesystem", "tool_name": "write_file"},
+}
+
 ORCHESTRATOR_SYSTEM = """You are a local RAG orchestrator that uses MCP (Model Context Protocol) tools.
 Create a short JSON plan with keys: objective, tasks, response_style.
 Each task must have: name, kind, query, priority.
@@ -26,8 +35,8 @@ The ONLY valid kinds are:
 - retrieve: search locally indexed documents for information about the codebase.
 - mcp: call a tool from a connected MCP server for everything else.
 
-For 'mcp' tasks, format query EXACTLY as a JSON string:
-  '{"server_name": "<server>", "tool_name": "<tool>", "arguments": {<args>}}'
+For 'mcp' tasks, format query as a JSON object:
+  {"server_name": "<server>", "tool_name": "<tool>", "arguments": {<args>}}
 
 CRITICAL RULES:
 - Use kind 'mcp' for ALL tool calls (web search, file operations, git, code, browser, etc.).
@@ -83,14 +92,17 @@ async def build_plan(state: RagState) -> ExecutionPlan:
     if all_tools:
         tools_prompt = "\nAvailable Dynamic MCP Tools you can run:\n"
         for t in all_tools:
+            props = t.get('input_schema', {}).get('properties', {})
+            req = t.get('input_schema', {}).get('required', [])
+            args_hint = ", ".join(f"{k} (required)" if k in req else k for k in props.keys())
             tools_prompt += (
                 f"- Server: {t['server_name']} | Tool: {t['name']}\n"
                 f"  Description: {t['description']}\n"
-                f"  Input Schema: {json.dumps(t['input_schema'])}\n"
+                f"  Arguments: {{{args_hint}}}\n"
             )
         tools_prompt += (
-            "\nTo use any of these dynamic MCP tools, you MUST set kind to 'mcp', and format query exactly as a JSON string: \n"
-            "  'query': '{\"server_name\": \"<server_name>\", \"tool_name\": \"<tool_name>\", \"arguments\": {<args>}}'\n"
+            "\nTo use any of these dynamic MCP tools, you MUST set kind to 'mcp', and format 'query' as a JSON object: \n"
+            "  \"query\": {\"server_name\": \"<server_name>\", \"tool_name\": \"<tool_name>\", \"arguments\": {<args>}}\n"
         )
 
     client = OllamaClient()
@@ -105,11 +117,17 @@ async def build_plan(state: RagState) -> ExecutionPlan:
         )
         parsed = safe_json_loads(raw)
         parsed = parsed if isinstance(parsed, dict) else {}
+        
+        def _parse_query(q: Any) -> str:
+            if isinstance(q, dict):
+                return json.dumps(q)
+            return str(q)
+
         tasks = [
             PlanTask(
                 name=item.get("name", f"task_{idx}"),
                 kind=_normalize_kind(str(item.get("kind", "")), str(item.get("query", state.user_input))),
-                query=item.get("query", state.user_input),
+                query=_parse_query(item.get("query", state.user_input)),
                 priority=int(item.get("priority", idx)),
             )
             for idx, item in enumerate(parsed.get("tasks", [])[:4], start=1)
