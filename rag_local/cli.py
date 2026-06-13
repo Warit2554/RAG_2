@@ -277,6 +277,192 @@ def interactive_select(options: list[str], title: str, default_index: int = 0, t
         sys.stdout.flush()
 
 
+def read_paste(fd: int) -> str:
+    """Reads all immediately available characters from fd as a single pasted string."""
+    chars = []
+    while True:
+        r, _, _ = select.select([fd], [], [], 0.005)
+        if r:
+            b = os.read(fd, 1)
+            if b:
+                chars.append(b)
+            else:
+                break
+        else:
+            break
+    if not chars:
+        return ""
+    return b"".join(chars).decode('utf-8', errors='ignore')
+
+
+def segments_to_strings(segments: list[dict], theme: Theme) -> tuple[str, str, list[tuple[int, int, dict]]]:
+    """
+    Returns:
+      - display_string (with ANSI theme styling for placeholders)
+      - actual_string (raw text value)
+      - mapping: list of tuples (start_idx, end_idx, segment_ref) in display_string
+    """
+    display_parts = []
+    actual_parts = []
+    mapping = []
+    
+    current_display_idx = 0
+    for seg in segments:
+        if seg["type"] == "text":
+            val = seg["value"]
+            display_val = ""
+            for char in val:
+                if char in ("\n", "\r"):
+                    display_val += f"{theme.secondary}↵\033[0m"
+                else:
+                    display_val += char
+            display_parts.append(display_val)
+            actual_parts.append(val)
+            
+            start = current_display_idx
+            end = current_display_idx + len(val)
+            mapping.append((start, end, seg))
+            current_display_idx = end
+        elif seg["type"] == "paste":
+            placeholder = seg["placeholder"]
+            styled_placeholder = f"{theme.secondary}{placeholder}\033[0m"
+            display_parts.append(styled_placeholder)
+            actual_parts.append(seg["value"])
+            
+            start = current_display_idx
+            end = current_display_idx + len(placeholder)
+            mapping.append((start, end, seg))
+            current_display_idx = end
+            
+    return "".join(display_parts), "".join(actual_parts), mapping
+
+
+def clean_segments(segments: list[dict]):
+    """Normalizes the segments list by merging consecutive text blocks and removing empty ones."""
+    new_segs = []
+    for seg in segments:
+        if seg["type"] == "text":
+            if not seg["value"]:
+                continue
+            if new_segs and new_segs[-1]["type"] == "text":
+                new_segs[-1]["value"] += seg["value"]
+            else:
+                new_segs.append(seg)
+        else:
+            new_segs.append(seg)
+    if not new_segs:
+        new_segs = [{"type": "text", "value": ""}]
+    segments[:] = new_segs
+
+
+def insert_char_at(segments: list[dict], cursor_pos: int, char: str, mapping: list) -> int:
+    """Inserts a character (or string) at cursor_pos, updating segments in place. Returns new cursor_pos."""
+    if not segments:
+        segments.append({"type": "text", "value": char})
+        return len(char)
+        
+    for idx, (start, end, seg) in enumerate(mapping):
+        if seg["type"] == "text" and start <= cursor_pos <= end:
+            offset = cursor_pos - start
+            seg["value"] = seg["value"][:offset] + char + seg["value"][offset:]
+            return cursor_pos + len(char)
+        elif seg["type"] == "paste":
+            if cursor_pos == start:
+                segments.insert(idx, {"type": "text", "value": char})
+                return cursor_pos + len(char)
+            elif cursor_pos == end:
+                if idx + 1 < len(segments) and segments[idx + 1]["type"] == "text":
+                    segments[idx + 1]["value"] = char + segments[idx + 1]["value"]
+                else:
+                    segments.insert(idx + 1, {"type": "text", "value": char})
+                return cursor_pos + len(char)
+                
+    if segments[-1]["type"] == "text":
+        segments[-1]["value"] += char
+    else:
+        segments.append({"type": "text", "value": char})
+    return cursor_pos + len(char)
+
+
+def insert_paste(segments: list[dict], cursor_pos: int, paste_text: str, mapping: list, placeholder_id: int) -> int:
+    """Inserts a pasted block as a single PasteBlock segment. Returns new cursor_pos."""
+    lines = len(paste_text.splitlines())
+    if lines > 1:
+        placeholder = f"[Pasted text #{placeholder_id} +{lines - 1} lines]"
+    else:
+        placeholder = f"[Pasted text #{placeholder_id}]"
+        
+    new_seg = {"type": "paste", "value": paste_text, "placeholder": placeholder}
+    
+    if not segments:
+        segments.append(new_seg)
+        return len(placeholder)
+        
+    for idx, (start, end, seg) in enumerate(mapping):
+        if seg["type"] == "text" and start <= cursor_pos <= end:
+            offset = cursor_pos - start
+            left_val = seg["value"][:offset]
+            right_val = seg["value"][offset:]
+            
+            del segments[idx]
+            insert_idx = idx
+            if right_val:
+                segments.insert(insert_idx, {"type": "text", "value": right_val})
+            segments.insert(insert_idx, new_seg)
+            if left_val:
+                segments.insert(insert_idx, {"type": "text", "value": left_val})
+            return cursor_pos + len(placeholder)
+        elif seg["type"] == "paste":
+            if cursor_pos == start:
+                segments.insert(idx, new_seg)
+                return cursor_pos + len(placeholder)
+            elif cursor_pos == end:
+                segments.insert(idx + 1, new_seg)
+                return cursor_pos + len(placeholder)
+                
+    segments.append(new_seg)
+    return cursor_pos + len(placeholder)
+
+
+def handle_backspace(segments: list[dict], cursor_pos: int, mapping: list) -> int:
+    """Handles backspace at cursor_pos, expanding paste blocks or deleting characters."""
+    if cursor_pos <= 0 or not segments:
+        return cursor_pos
+        
+    for idx, (start, end, seg) in enumerate(mapping):
+        if start <= cursor_pos - 1 < end:
+            if seg["type"] == "paste":
+                # Expand paste block to text segment
+                seg["type"] = "text"
+                new_pos = start + len(seg["value"])
+                return new_pos
+            else:
+                # Normal text backspace
+                offset = cursor_pos - 1 - start
+                seg["value"] = seg["value"][:offset] + seg["value"][offset + 1:]
+                return cursor_pos - 1
+                
+    return cursor_pos
+
+
+def read_bracketed_paste(fd: int) -> str:
+    """Reads stdin until the bracketed paste end sequence \\x1b[201~ is encountered."""
+    buffer = b""
+    end_seq = b"\x1b[201~"
+    while True:
+        r, _, _ = select.select([fd], [], [], 0.05)
+        if not r:
+            break
+        b = os.read(fd, 1)
+        if not b:
+            break
+        buffer += b
+        if buffer.endswith(end_seq):
+            buffer = buffer[:-len(end_seq)]
+            break
+    return buffer.decode('utf-8', errors='ignore')
+
+
 def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
     """Reads a line of user input, supporting autocomplete overlay and arrow key selection."""
     if not TERMIOS_AVAILABLE or not sys.stdin.isatty():
@@ -285,56 +471,99 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     
-    buffer = ""
+    segments = [{"type": "text", "value": ""}]
     cursor_pos = 0
     prev_lines_drawn = 0
     selected_idx = 0
     history_idx = len(history) if history else 0
     prompt_len = visible_len(prompt)
     is_history_browsing = False
+    paste_id_counter = 1
     
     sys.stdout.write("\r" + prompt + "\033[K")
     sys.stdout.flush()
     
     try:
         tty.setraw(fd)
+        sys.stdout.write("\033[?2004h") # Enable bracketed paste
+        sys.stdout.flush()
         while True:
             key = read_key(fd)
             if not key:
                 break
                 
+            full_paste = None
+            if key == "\x1b[200~":
+                full_paste = read_bracketed_paste(fd)
+            else:
+                # Check if this is part of a fast copy-paste stream (fallback)
+                r, _, _ = select.select([fd], [], [], 0.01)
+                if r:
+                    paste_tail = read_paste(fd)
+                    if paste_tail:
+                        full_paste = key + paste_tail
+                        
+            if full_paste is not None:
+                clear_suggestions(prev_lines_drawn, prompt_len, cursor_pos)
+                prev_lines_drawn = 0
+                
+                display_str, actual_str, mapping = segments_to_strings(segments, theme)
+                
+                # If paste is long or multiline, insert as paste segment, else insert as text
+                if len(full_paste) > 50 or "\n" in full_paste or "\r" in full_paste:
+                    cursor_pos = insert_paste(segments, cursor_pos, full_paste, mapping, paste_id_counter)
+                    paste_id_counter += 1
+                else:
+                    cursor_pos = insert_char_at(segments, cursor_pos, full_paste, mapping)
+                    
+                clean_segments(segments)
+                is_history_browsing = False
+                
+                display_str, actual_str, mapping = segments_to_strings(segments, theme)
+                sys.stdout.write("\r" + prompt + display_str + "\033[K")
+                left_move = visible_len(display_str) - cursor_pos
+                if left_move > 0:
+                    sys.stdout.write(f"\033[{left_move}D")
+                sys.stdout.flush()
+                continue
+
             clear_suggestions(prev_lines_drawn, prompt_len, cursor_pos)
             prev_lines_drawn = 0
+            
+            display_str, actual_str, mapping = segments_to_strings(segments, theme)
             
             if key == "\x03": # Ctrl+C
                 raise KeyboardInterrupt
             elif key == "\x04": # Ctrl+D
                 raise EOFError
             elif key in ("\r", "\n"):
-                matches = [s for s in SUGGESTIONS if s[0].startswith(buffer)] if buffer.startswith("/") else []
+                matches = [s for s in SUGGESTIONS if s[0].startswith(actual_str)] if actual_str.startswith("/") else []
                 if matches and not is_history_browsing:
-                    buffer = matches[selected_idx][0]
+                    segments = [{"type": "text", "value": matches[selected_idx][0]}]
+                    display_str, actual_str, mapping = segments_to_strings(segments, theme)
                 break
             elif key == "\t":
                 is_history_browsing = False
-                matches = [s for s in SUGGESTIONS if s[0].startswith(buffer)] if buffer.startswith("/") else []
+                matches = [s for s in SUGGESTIONS if s[0].startswith(actual_str)] if actual_str.startswith("/") else []
                 if matches:
-                    buffer = matches[selected_idx][0]
-                    cursor_pos = len(buffer)
-                sys.stdout.write("\r" + prompt + buffer + "\033[K")
+                    segments = [{"type": "text", "value": matches[selected_idx][0]}]
+                    display_str, actual_str, mapping = segments_to_strings(segments, theme)
+                    cursor_pos = visible_len(display_str)
+                sys.stdout.write("\r" + prompt + display_str + "\033[K")
                 sys.stdout.flush()
             elif key in ("\x7f", "\x08"):
                 is_history_browsing = False
-                if cursor_pos > 0:
-                    buffer = buffer[:cursor_pos - 1] + buffer[cursor_pos:]
-                    cursor_pos -= 1
-                sys.stdout.write("\r" + prompt + buffer + "\033[K")
-                left_move = len(buffer) - cursor_pos
+                cursor_pos = handle_backspace(segments, cursor_pos, mapping)
+                clean_segments(segments)
+                
+                display_str, actual_str, mapping = segments_to_strings(segments, theme)
+                sys.stdout.write("\r" + prompt + display_str + "\033[K")
+                left_move = visible_len(display_str) - cursor_pos
                 if left_move > 0:
                     sys.stdout.write(f"\033[{left_move}D")
                 sys.stdout.flush()
             elif key == "\x1b[C":
-                if cursor_pos < len(buffer):
+                if cursor_pos < visible_len(display_str):
                     cursor_pos += 1
                     sys.stdout.write("\033[1C")
                     sys.stdout.flush()
@@ -344,57 +573,66 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
                     sys.stdout.write("\033[1D")
                     sys.stdout.flush()
             elif key == "\x1b[A":
-                matches = [s for s in SUGGESTIONS if s[0].startswith(buffer)] if buffer.startswith("/") else []
+                matches = [s for s in SUGGESTIONS if s[0].startswith(actual_str)] if actual_str.startswith("/") else []
                 if matches and not is_history_browsing:
                     selected_idx = (selected_idx - 1) % min(len(matches), 5)
                 else:
                     is_history_browsing = True
                     if history and history_idx > 0:
                         history_idx -= 1
-                        buffer = history[history_idx]
-                        cursor_pos = len(buffer)
-                        sys.stdout.write("\r" + prompt + buffer + "\033[K")
+                        segments = [{"type": "text", "value": history[history_idx]}]
+                        display_str, actual_str, mapping = segments_to_strings(segments, theme)
+                        cursor_pos = visible_len(display_str)
+                        sys.stdout.write("\r" + prompt + display_str + "\033[K")
                         sys.stdout.flush()
             elif key == "\x1b[B":
-                matches = [s for s in SUGGESTIONS if s[0].startswith(buffer)] if buffer.startswith("/") else []
+                matches = [s for s in SUGGESTIONS if s[0].startswith(actual_str)] if actual_str.startswith("/") else []
                 if matches and not is_history_browsing:
                     selected_idx = (selected_idx + 1) % min(len(matches), 5)
                 else:
                     is_history_browsing = True
                     if history and history_idx < len(history) - 1:
                         history_idx += 1
-                        buffer = history[history_idx]
-                        cursor_pos = len(buffer)
-                        sys.stdout.write("\r" + prompt + buffer + "\033[K")
+                        segments = [{"type": "text", "value": history[history_idx]}]
+                        display_str, actual_str, mapping = segments_to_strings(segments, theme)
+                        cursor_pos = visible_len(display_str)
+                        sys.stdout.write("\r" + prompt + display_str + "\033[K")
                         sys.stdout.flush()
                     elif history and history_idx == len(history) - 1:
                         history_idx += 1
-                        buffer = ""
+                        segments = [{"type": "text", "value": ""}]
+                        display_str, actual_str, mapping = segments_to_strings(segments, theme)
                         cursor_pos = 0
-                        sys.stdout.write("\r" + prompt + buffer + "\033[K")
+                        sys.stdout.write("\r" + prompt + display_str + "\033[K")
                         sys.stdout.flush()
             elif len(key) == 1 and key.isprintable():
                 is_history_browsing = False
-                buffer = buffer[:cursor_pos] + key + buffer[cursor_pos:]
-                cursor_pos += 1
-                sys.stdout.write("\r" + prompt + buffer + "\033[K")
-                left_move = len(buffer) - cursor_pos
+                cursor_pos = insert_char_at(segments, cursor_pos, key, mapping)
+                clean_segments(segments)
+                
+                display_str, actual_str, mapping = segments_to_strings(segments, theme)
+                sys.stdout.write("\r" + prompt + display_str + "\033[K")
+                left_move = visible_len(display_str) - cursor_pos
                 if left_move > 0:
                     sys.stdout.write(f"\033[{left_move}D")
                 sys.stdout.flush()
                 selected_idx = 0
 
-            if buffer.startswith("/") and not is_history_browsing:
-                matches = [s for s in SUGGESTIONS if s[0].startswith(buffer)]
+            # Draw suggestions
+            if actual_str.startswith("/") and not is_history_browsing:
+                matches = [s for s in SUGGESTIONS if s[0].startswith(actual_str)]
                 if matches:
                     prev_lines_drawn = draw_suggestions(matches, selected_idx, theme, prompt_len, cursor_pos)
                     
     finally:
+        sys.stdout.write("\033[?2004l") # Disable bracketed paste
+        sys.stdout.flush()
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
         
-    sys.stdout.write("\r" + prompt + buffer + "\033[K\n")
+    display_str, actual_str, mapping = segments_to_strings(segments, theme)
+    sys.stdout.write("\r" + prompt + display_str + "\033[K\n")
     sys.stdout.flush()
-    return buffer
+    return actual_str
 
 
 async def get_ollama_models() -> list[dict]:
