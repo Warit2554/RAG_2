@@ -796,23 +796,30 @@ class CliRepl:
         from .mcp_client import mcp_manager
         import atexit
 
-        mcp_manager._started = True
-        await mcp_manager.start_all()
+        # ── Background MCP startup ──────────────────────────────────
+        # Fire-and-forget: the prompt appears immediately.
+        # A shared Event signals when startup is complete.
+        _mcp_ready = asyncio.Event()
+        _mcp_bg_task: asyncio.Task | None = None
+
+        async def _start_mcp_bg() -> None:
+            mcp_manager._started = True
+            await mcp_manager.start_all()
+            _mcp_ready.set()
+
+        _mcp_bg_task = asyncio.create_task(_start_mcp_bg())
 
         def cleanup_mcp():
+            # atexit handler: best-effort sync cleanup (event loop may be closed)
             try:
                 loop = asyncio.get_event_loop()
-                if loop.is_running():
+                if not loop.is_closed() and loop.is_running():
                     loop.create_task(mcp_manager.stop_all())
-                else:
-                    loop.run_until_complete(mcp_manager.stop_all())
             except Exception:
-                try:
-                    asyncio.run(mcp_manager.stop_all())
-                except Exception:
-                    pass
+                pass
         atexit.register(cleanup_mcp)
 
+        print(f"{theme.secondary}[MCP]\033[0m Connecting to MCP servers in background...")
         print()
 
         current_answer = []
@@ -989,6 +996,23 @@ class CliRepl:
                         }
                     }
 
+                    # ── Wait for MCP if still connecting (max 15s) ──────────
+                    if not _mcp_ready.is_set():
+                        mcp_spinner = ThinkingSpinner(theme, "Waiting for MCP servers")
+                        mcp_spinner.start()
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(asyncio.ensure_future(_mcp_ready.wait())),
+                                timeout=15.0,
+                            )
+                        except asyncio.TimeoutError:
+                            pass
+                        finally:
+                            mcp_spinner.stop()
+                            if not _mcp_ready.is_set():
+                                _mcp_ready.set()  # unblock future queries
+                                print(f"{theme.secondary}[MCP]\033[0m Timed out waiting for servers — proceeding without MCP.")
+
                     graph_input = {"user_input": query, "chat_history": self.history}
                     if clarification_response:
                         graph_input["clarification_response"] = clarification_response
@@ -1131,15 +1155,152 @@ class CliRepl:
                 print(f"\n{theme.primary}Goodbye!\033[0m")
                 break
                 
-        # Unload all active models from Ollama memory on exit
-        print(f"\n{theme.secondary}[System]\033[0m Unloading active models from Ollama memory...")
-        active_models = {SETTINGS.ollama_chat_model, SETTINGS.ollama_router_model, SETTINGS.ollama_orchestrator_model, SETTINGS.ollama_embed_model}
-        for m in active_models:
-            if m:
-                await unload_ollama_model(m)
+        # ── Clean exit sequence ────────────────────────────────────
+        print(f"\n{theme.secondary}[System]\033[0m Shutting down...")
+
+        import io
+
+        # Silence all stderr output during shutdown:
+        # anyio cancel-scope RuntimeErrors and asyncio 'Task exception was never
+        # retrieved' warnings are expected noise when cancelling MCP subprocesses.
+        _real_stderr = sys.stderr
+        sys.stderr = open(os.devnull, "w")  # noqa: WPS515
+
+        # Also silence asyncio's internal exception logger for the same reason.
+        loop = asyncio.get_event_loop()
+        loop.set_exception_handler(lambda _loop, _ctx: None)
+
+        async def _shutdown() -> None:
+            # 1. Cancel the background MCP startup task if still running
+            nonlocal _mcp_bg_task
+            if _mcp_bg_task and not _mcp_bg_task.done():
+                _mcp_bg_task.cancel()
+                try:
+                    await _mcp_bg_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            # 2. Stop all MCP server subprocesses (inline, while event loop is live)
+            try:
+                await asyncio.wait_for(mcp_manager.stop_all(), timeout=3.0)
+            except Exception:
+                pass
+
+            # 3. Unload Ollama models in parallel (max 3s total)
+            active_models = {
+                SETTINGS.ollama_chat_model,
+                SETTINGS.ollama_router_model,
+                SETTINGS.ollama_orchestrator_model,
+                SETTINGS.ollama_embed_model,
+            }
+            sys.stderr = _real_stderr  # restore before printing
+            print(f"{theme.secondary}[System]\033[0m Unloading Ollama models...")
+            sys.stderr = open(os.devnull, "w")
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        *[unload_ollama_model(m) for m in active_models if m],
+                        return_exceptions=True,
+                    ),
+                    timeout=3.0,
+                )
+            except Exception:
+                pass
+
+        try:
+            await asyncio.wait_for(_shutdown(), timeout=5.0)
+        except Exception:
+            pass
+        finally:
+            # Always restore stderr before the final message
+            try:
+                sys.stderr.close()
+            except Exception:
+                pass
+            sys.stderr = _real_stderr
+
+        print(f"{theme.secondary}[System]\033[0m Bye!\033[0m")
+
+
+def _install_noise_filters() -> None:
+    """
+    Suppress the anyio 'cancel scope in a different task' RuntimeErrors and
+    asyncio 'Task exception was never retrieved' warnings that appear when
+    MCP server Tasks are cancelled.  These are harmless — the exceptions are
+    already caught inside _try_connect_server — but asyncio's GC prints them
+    to stderr unconditionally via three separate code paths:
+
+      1. loop.call_exception_handler()   → set a custom handler
+      2. sys.unraisablehook              → fired by GC finaliser
+      3. Task.__del__ stderr write       → filtered via sys.stderr wrapper
+    """
+    # ── 1. asyncio event-loop exception handler ──────────────────────────────
+    _NOISE_PHRASES = (
+        "cancel scope",
+        "Task exception was never retrieved",
+        "unhandled errors in a TaskGroup",
+        "GeneratorExit",
+        "stdio_client",
+    )
+
+    def _loop_exc_handler(loop: asyncio.AbstractEventLoop, ctx: dict) -> None:
+        msg   = ctx.get("message", "")
+        exc   = ctx.get("exception")
+        exc_s = str(exc) if exc else ""
+        if any(p in msg or p in exc_s for p in _NOISE_PHRASES):
+            return  # silently drop
+        loop.default_exception_handler(ctx)
+
+    # Install on every new loop created by asyncio.run()
+    class _QuietPolicy(asyncio.DefaultEventLoopPolicy):
+        def new_event_loop(self) -> asyncio.AbstractEventLoop:
+            loop = super().new_event_loop()
+            loop.set_exception_handler(_loop_exc_handler)
+            return loop
+
+    asyncio.set_event_loop_policy(_QuietPolicy())
+
+    # ── 2. sys.unraisablehook — GC-collected task finaliser ──────────────────
+    import sys as _sys
+    _orig_unraisable = _sys.unraisablehook
+
+    def _unraisable_hook(ur: "_sys.UnraisableHookArgs") -> None:  # type: ignore[name-defined]
+        exc_s = str(ur.exc_value) if ur.exc_value else ""
+        if any(p in exc_s for p in _NOISE_PHRASES):
+            return
+        _orig_unraisable(ur)
+
+    _sys.unraisablehook = _unraisable_hook
+
+    # ── 3. Wrap stderr to silently drop MCP noise lines ──────────────────────
+    class _FilteredStderr:
+        def __init__(self, wrapped: object) -> None:
+            self._w = wrapped
+            self._skip = False
+
+        def write(self, s: str) -> int:
+            if any(p in s for p in _NOISE_PHRASES):
+                self._skip = True
+                return len(s)
+            if self._skip and s.strip():
+                # Keep skipping multi-line tracebacks belonging to MCP noise
+                if s.startswith("  ") or s.startswith("+-") or s.startswith("| ") or s.startswith("Traceback"):
+                    return len(s)
+                self._skip = False
+            return self._w.write(s)  # type: ignore[union-attr]
+
+        def flush(self) -> None:
+            self._w.flush()  # type: ignore[union-attr]
+
+        def __getattr__(self, name: str):  # type: ignore[override]
+            return getattr(self._w, name)
+
+    import sys as _sys2
+    _sys2.stderr = _FilteredStderr(_sys2.stderr)
 
 
 def main() -> None:
+    _install_noise_filters()
     repl = CliRepl()
     try:
         asyncio.run(repl.start())

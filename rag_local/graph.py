@@ -35,11 +35,11 @@ async def router_node(state: GraphState) -> dict[str, Any]:
     from .mcp_client import mcp_manager
     import atexit
     
-    # Lazy initialization of MCP servers on first graph invocation
+    # Skip lazy-init if background startup is already in progress or done
     if not mcp_manager.sessions and not getattr(mcp_manager, "_started", False):
         mcp_manager._started = True
         await mcp_manager.start_all()
-        
+
         # Register atexit handler to ensure subprocesses are cleaned up on exit
         def cleanup_mcp():
             try:
