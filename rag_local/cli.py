@@ -38,6 +38,28 @@ class CliRepl:
         print("\033[1;32mLocal RAG CLI REPL (type /exit to quit, /clear to reset history, /ingest to re-index, /interactive to configure)\033[0m")
         print(f"Ollama Host: {SETTINGS.ollama_host} | Model: {SETTINGS.ollama_chat_model}\n")
 
+        from .mcp_client import mcp_manager
+        import atexit
+
+        mcp_manager._started = True
+        await mcp_manager.start_all()
+
+        def cleanup_mcp():
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(mcp_manager.stop_all())
+                else:
+                    loop.run_until_complete(mcp_manager.stop_all())
+            except Exception:
+                try:
+                    asyncio.run(mcp_manager.stop_all())
+                except Exception:
+                    pass
+        atexit.register(cleanup_mcp)
+
+        print()
+
         current_answer = []
         first_token = True
 

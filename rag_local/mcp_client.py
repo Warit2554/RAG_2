@@ -81,8 +81,9 @@ class MCPClientManager:
                     env=os.environ.copy()
                 )
                 # Enter stdio_client context
+                import subprocess
                 read_stream, write_stream = await self.exit_stack.enter_async_context(
-                    stdio_client(server_params)
+                    stdio_client(server_params, errlog=subprocess.DEVNULL)
                 )
                 # Enter ClientSession context
                 session = await self.exit_stack.enter_async_context(
