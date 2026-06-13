@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,19 +31,36 @@ Kinds and when to use them:
   Use this for ANY request that involves finding and saving a picture/image/file.
 - code: run Python code to analyze or inspect the LOCAL codebase only.
   NEVER use 'code' to download files, save images, or make network requests.
+  NEVER use 'code' when the user wants to CREATE or SAVE a script/file to disk.
+- write: generate content and SAVE IT TO DISK as a file (e.g., .sh, .py, .txt scripts).
+  Use this when the user asks to 'create X and save as Y' or 'write a script to Z file'.
+  Format query as: '{"filename": "/absolute/path/to/file.sh", "description": "what the file should contain"}'
 - mcp: call specialized tools from connected MCP servers.
 
 CRITICAL RULES:
-- If the user wants to find/download/save an image or file → use kind: download
+- If the user wants to find/download/save an image or file from internet → use kind: download
+- If the user wants to CREATE a script/file and save it to disk → use kind: write
 - If the user wants to analyze code, check bugs, or inspect the repo → use kind: code
 - Do NOT use 'code' for anything involving network access or file downloads.
+- Do NOT use 'code' when the user says 'save as .sh', 'save as .py', 'write to file', etc.
 """
 
 
 def _normalize_kind(kind: str, query: str) -> str:
     value = kind.strip().lower()
+    lower_query = query.lower().strip()
+
+    # Save-to-disk intent always wins — even if LLM says 'code'
+    if any(phrase in lower_query for phrase in [
+        "save as .sh", "save as .py", "save as .txt", "save as .bash",
+        "save to file", "write to file", "save it as", "save the script",
+    ]) or re.search(r'\bsave\b.{0,20}\.(sh|py|bash|zsh|fish|txt|ps1|bat|cmd)\b', lower_query):
+        return "write"
+
     if value == "mcp":
         return "mcp"
+    if value in {"write"}:
+        return "write"
     if value in {"code", "code_analysis", "analysis"}:
         return "code"
     if value in {"web", "web_search", "search", "internet"}:
@@ -55,7 +73,6 @@ def _normalize_kind(kind: str, query: str) -> str:
         return "git"
     if value == "download":
         return "download"
-    lower_query = query.lower().strip()
     if lower_query.startswith(("http://", "https://")):
         return "scrape"
     if any(word in lower_query for word in ["git status", "git diff", "git log", "git show", "git branch"]):
@@ -148,6 +165,80 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
             )
         except Exception as exc:
             return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=str(exc))
+    if task.kind == "write":
+        import json as _json
+        import re
+        try:
+            # Parse the query: either a JSON with filename+description, or plain natural language
+            params = {}
+            try:
+                params = _json.loads(task.query)
+            except Exception:
+                pass
+
+            filename = params.get("filename", "")
+            description = params.get("description", task.query)
+
+            # If no filename parsed, extract from natural language
+            if not filename:
+                sh_match = re.search(r'[\w./-]+\.(?:sh|py|txt|bash|zsh|fish|ps1|bat|cmd)', task.query, re.IGNORECASE)
+                filename = sh_match.group(0) if sh_match else "output.sh"
+                # Make absolute if relative
+                if not filename.startswith("/"):
+                    from pathlib import Path as _Path
+                    filename = str(_Path(".").resolve() / filename)
+                description = task.query
+
+            # Generate file content using LLM
+            client = OllamaClient()
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "sh"
+            lang_map = {"sh": "bash", "bash": "bash", "zsh": "bash", "py": "python", "txt": "text", "fish": "fish", "ps1": "powershell"}
+            lang = lang_map.get(ext, ext)
+            gen_system = (
+                f"You are an expert {lang} script writer.\n"
+                f"Generate a complete, working {lang} script that: {description}\n"
+                f"Output ONLY the raw script content — no markdown fences, no explanation."
+            )
+            content = await client.chat(
+                SETTINGS.ollama_chat_model,
+                build_messages(gen_system, description),
+                temperature=0.1,
+                keep_alive=SETTINGS.rag_keep_alive,
+            )
+            # Strip markdown fences if model included them anyway
+            content = re.sub(r'^```[\w]*\n?', '', content.strip(), flags=re.MULTILINE)
+            content = re.sub(r'\n?```$', '', content.strip(), flags=re.MULTILINE)
+            content = content.strip()
+
+            # Write via filesystem MCP if available, else write directly
+            from .mcp_client import mcp_manager
+            wrote_via_mcp = False
+            if "filesystem" in mcp_manager.sessions:
+                try:
+                    result_str = await mcp_manager.call_tool(
+                        "filesystem", "write_file",
+                        {"path": filename, "content": content}
+                    )
+                    wrote_via_mcp = True
+                    summary = f"✓ Written to `{filename}` via filesystem MCP.\n\nContent preview:\n```{lang}\n{content[:800]}{'...' if len(content) > 800 else ''}\n```"
+                except Exception as mcp_exc:
+                    pass  # fallback to direct write
+
+            if not wrote_via_mcp:
+                from pathlib import Path as _Path
+                _Path(filename).parent.mkdir(parents=True, exist_ok=True)
+                _Path(filename).write_text(content, encoding="utf-8")
+                summary = f"✓ Written to `{filename}` (direct write).\n\nContent preview:\n```{lang}\n{content[:800]}{'...' if len(content) > 800 else ''}\n```"
+
+            return WorkerResult(
+                task_name=task.name,
+                kind=task.kind,
+                success=True,
+                summary=summary,
+                artifacts=[{"filename": filename, "content": content}],
+            )
+        except Exception as exc:
+            return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=f"Write failed: {exc}")
     if task.kind == "retrieve":
         retrieval = await hybrid_retrieve(task.query)
         summary = "\n".join(

@@ -283,7 +283,20 @@ fi
 
 # Pull official OCI MCP catalog images
 echo "Pre-pulling official OCI MCP catalog images..."
-for img in mcp/filesystem mcp/memory mcp/time mcp/sequentialthinking mcp/fetch mcp/duckduckgo; do
+for img in \
+    mcp/playwright \
+    mcp/filesystem \
+    mcp/desktop-commander \
+    mcp/git \
+    mcp/memory \
+    mcp/docker \
+    crystaldba/postgres-mcp \
+    mcp/context7 \
+    mcp/firecrawl \
+    mcp/time \
+    mcp/sequentialthinking \
+    mcp/fetch \
+    mcp/duckduckgo; do
     echo "Pulling $img..."
     if docker pull "$img" &>/dev/null; then
         echo -e "${GREEN}✓ Ready: $img${NC}"
@@ -291,6 +304,23 @@ for img in mcp/filesystem mcp/memory mcp/time mcp/sequentialthinking mcp/fetch m
         echo -e "${YELLOW}Warning: Could not pull $img.${NC}"
     fi
 done
+
+# Pull GitHub official MCP server (hosted on GitHub Container Registry)
+echo "Pulling ghcr.io/github/github-mcp-server..."
+if docker pull ghcr.io/github/github-mcp-server &>/dev/null; then
+    echo -e "${GREEN}✓ Ready: ghcr.io/github/github-mcp-server${NC}"
+else
+    echo -e "${YELLOW}Warning: Could not pull ghcr.io/github/github-mcp-server. Ensure you are authenticated with ghcr.io.${NC}"
+fi
+
+# Pre-fetch SSH MCP server (uses npx, arm64-compatible)
+echo "Pre-fetching SSH MCP server via npx..."
+if npx -y @idletoaster/ssh-mcp-server@latest --version &>/dev/null 2>&1 || true; then
+    echo -e "${GREEN}✓ SSH MCP server available via npx${NC}"
+else
+    echo -e "${YELLOW}Note: SSH MCP server will be auto-downloaded on first use via npx.${NC}"
+fi
+
 
 # ─────────────────────────────────────────────
 # 6.5. Ollama Setup

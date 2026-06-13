@@ -186,7 +186,7 @@ async def execute_workers_node(state: GraphState) -> dict[str, Any]:
     if not plan:
         return {}
     results = await run_parallel_tasks(plan, RagState(**state))
-    code_results = [r for r in results if r.kind in {"code", "git", "download"}]
+    code_results = [r for r in results if r.kind in {"code", "git", "download", "mcp", "write"}]
     web_results = [r for r in results if r.kind in {"web", "scrape"}]
     retrieved = state.get("retrieved_chunks", [])
     return {"code_results": code_results, "web_results": web_results, "retrieved_chunks": retrieved}

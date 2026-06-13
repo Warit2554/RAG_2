@@ -1,5 +1,19 @@
 {
   "mcpServers": {
+    "playwright": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--init",
+        "-e",
+        "DISPLAY_WIDTH=1280",
+        "-e",
+        "DISPLAY_HEIGHT=720",
+        "mcp/playwright"
+      ]
+    },
     "filesystem": {
       "command": "docker",
       "args": [
@@ -8,9 +22,59 @@
         "--rm",
         "-v",
         "{{WORKSPACE}}:{{WORKSPACE}}",
+        "-v",
+        "/tmp:/tmp",
+        "-v",
+        "/Users:/Users",
         "mcp/filesystem",
-        "{{WORKSPACE}}"
+        "{{WORKSPACE}}",
+        "/tmp",
+        "/Users"
       ]
+    },
+    "desktop-commander": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network",
+        "host",
+        "-v",
+        "{{WORKSPACE}}:{{WORKSPACE}}",
+        "-v",
+        "/tmp:/tmp",
+        "-v",
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "mcp/desktop-commander"
+      ]
+    },
+    "git": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-v",
+        "{{WORKSPACE}}:{{WORKSPACE}}",
+        "-v",
+        "/Users:/Users",
+        "mcp/git"
+      ]
+    },
+    "github": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "ghcr.io/github/github-mcp-server"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "{{GITHUB_PERSONAL_ACCESS_TOKEN}}"
+      }
     },
     "memory": {
       "command": "docker",
@@ -24,6 +88,66 @@
         "MEMORIES_FILEPATH=/workspace/memories.json",
         "mcp/memory"
       ]
+    },
+    "ssh": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@idletoaster/ssh-mcp-server@latest"
+      ]
+    },
+    "docker": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-v",
+        "/var/run/docker.sock:/var/run/docker.sock",
+        "mcp/docker"
+      ]
+    },
+    "postgres": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network",
+        "host",
+        "--add-host",
+        "host.docker.internal:host-gateway",
+        "-e",
+        "DATABASE_URI",
+        "crystaldba/postgres-mcp",
+        "--access-mode=unrestricted"
+      ],
+      "env": {
+        "DATABASE_URI": "{{POSTGRES_CONNECTION_STRING}}"
+      }
+    },
+    "context7": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "mcp/context7"
+      ]
+    },
+    "firecrawl": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "FIRECRAWL_API_KEY",
+        "mcp/firecrawl"
+      ],
+      "env": {
+        "FIRECRAWL_API_KEY": "{{FIRECRAWL_API_KEY}}"
+      }
     },
     "time": {
       "command": "docker",

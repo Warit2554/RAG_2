@@ -19,6 +19,101 @@ except ImportError:
     TERMIOS_AVAILABLE = False
 
 
+def render_markdown_ansi(text: str, theme: "Theme") -> str:
+    """Convert markdown to ANSI-styled terminal output."""
+    lines = text.split("\n")
+    output = []
+    in_code_block = False
+    code_lang = ""
+    code_buf = []
+
+    for line in lines:
+        # Fenced code block start
+        if not in_code_block and re.match(r'^```', line):
+            in_code_block = True
+            code_lang = line[3:].strip()
+            code_buf = []
+            output.append(f"\033[90m┌─ {code_lang or 'code'} {'─' * max(0, 50 - len(code_lang))}\033[0m")
+            continue
+        # Fenced code block end
+        if in_code_block and re.match(r'^```', line):
+            in_code_block = False
+            for cl in code_buf:
+                output.append(f"\033[90m│\033[0m \033[38;5;222m{cl}\033[0m")
+            output.append(f"\033[90m└{'─' * 52}\033[0m")
+            code_buf = []
+            continue
+        if in_code_block:
+            code_buf.append(line)
+            continue
+
+        # H1
+        if re.match(r'^# ', line):
+            txt = line[2:].strip()
+            output.append(f"\n{theme.primary}{'━' * 54}\n  {txt}\n{'━' * 54}\033[0m")
+            continue
+        # H2
+        if re.match(r'^## ', line):
+            txt = line[3:].strip()
+            output.append(f"\n{theme.primary}▌ {txt}\033[0m")
+            continue
+        # H3
+        if re.match(r'^### ', line):
+            txt = line[4:].strip()
+            output.append(f"{theme.secondary}  ▸ {txt}\033[0m")
+            continue
+
+        # Bullet / list
+        bullet_match = re.match(r'^(\s*)[\-\*\+] (.+)', line)
+        if bullet_match:
+            indent = bullet_match.group(1)
+            content = bullet_match.group(2)
+            content = _inline_md(content, theme)
+            output.append(f"{indent}{theme.secondary}•\033[0m {content}")
+            continue
+
+        # Numbered list
+        num_match = re.match(r'^(\s*)(\d+)[\.\)] (.+)', line)
+        if num_match:
+            indent = num_match.group(1)
+            num = num_match.group(2)
+            content = num_match.group(3)
+            content = _inline_md(content, theme)
+            output.append(f"{indent}{theme.secondary}{num}.\033[0m {content}")
+            continue
+
+        # Horizontal rule
+        if re.match(r'^[-\*_]{3,}$', line.strip()):
+            output.append(f"\033[90m{'─' * 54}\033[0m")
+            continue
+
+        # Blank line
+        if not line.strip():
+            output.append("")
+            continue
+
+        # Normal paragraph — apply inline transforms
+        output.append(_inline_md(line, theme))
+
+    return "\n".join(output)
+
+
+def _inline_md(text: str, theme: "Theme") -> str:
+    """Apply inline markdown transforms (bold, italic, inline code) to a string."""
+    # Inline code `...`
+    text = re.sub(r'`([^`]+)`', lambda m: f"\033[38;5;222m{m.group(1)}\033[0m", text)
+    # Bold **...**
+    text = re.sub(r'\*\*(.+?)\*\*', lambda m: f"\033[1m{m.group(1)}\033[22m", text)
+    # Bold __...__
+    text = re.sub(r'__(.+?)__', lambda m: f"\033[1m{m.group(1)}\033[22m", text)
+    # Italic *...*
+    text = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', lambda m: f"\033[3m{m.group(1)}\033[23m", text)
+    # Italic _..._
+    text = re.sub(r'(?<!_)_([^_]+)_(?!_)', lambda m: f"\033[3m{m.group(1)}\033[23m", text)
+    return text
+
+
+
 class Theme:
     def __init__(self, name: str, primary: str, secondary: str, text: str, accent: str):
         self.name = name
@@ -729,10 +824,10 @@ class CliRepl:
             if first_token:
                 if spinner:
                     spinner.stop()
-                sys.stdout.write("\n\n")
+                sys.stdout.write("\n")
                 first_token = False
             current_answer.append(token)
-            sys.stdout.write(f"{theme.text}{token}\033[0m")
+            # Don't write raw tokens — buffer them; rendering happens after completion
             sys.stdout.flush()
 
         while True:
@@ -921,7 +1016,8 @@ class CliRepl:
                                 if not synth_data.get("clarification_prompt"):
                                     final_ans = synth_data.get("final_answer", "")
                                     if final_ans and not current_answer:
-                                        print(f"\n\n{theme.text}{final_ans}\033[0m")
+                                        rendered = render_markdown_ansi(final_ans, theme)
+                                        print(f"\n\n{theme.text}{rendered}\033[0m")
                                         current_answer.append(final_ans)
 
                             for node_name, node_state in update.items():
@@ -1007,6 +1103,16 @@ class CliRepl:
                         continue
                     else:
                         break
+
+                # Render the streamed answer after completion
+                streamed = "".join(current_answer).strip()
+                if streamed and not first_token:
+                    rendered = render_markdown_ansi(streamed, theme)
+                    # Re-print rendered version (clear raw tokens first)
+                    sys.stdout.write("\033[2K\r")
+                    print(f"\n{theme.text}{rendered}\033[0m")
+                    current_answer.clear()
+                    current_answer.append(streamed)
 
                 # Append completed exchange to history
                 answer_text = "".join(current_answer).strip()

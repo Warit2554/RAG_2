@@ -12,6 +12,21 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
+def _load_env_file(env_path: Path) -> dict[str, str]:
+    """Parse a simple KEY=VALUE .env file and return as dict."""
+    env_vars: dict[str, str] = {}
+    if not env_path.exists():
+        return env_vars
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            env_vars[key.strip()] = value.strip()
+    return env_vars
+
+
 class MCPClientManager:
     def __init__(self, config_path: str | Path = "mcp_config.json") -> None:
         self.config_path = Path(config_path)
@@ -39,6 +54,13 @@ class MCPClientManager:
 
         workspace_dir = str(Path(".").resolve())
         python_executable = sys.executable
+        home_dir = str(Path.home())
+
+        # Load secrets from .env file (workspace root)
+        dot_env = _load_env_file(Path(workspace_dir) / ".env")
+        github_token = dot_env.get("GITHUB_PERSONAL_ACCESS_TOKEN", "") or os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", "")
+        firecrawl_key = dot_env.get("FIRECRAWL_API_KEY", "") or os.environ.get("FIRECRAWL_API_KEY", "")
+        postgres_conn = dot_env.get("POSTGRES_CONNECTION_STRING", "") or os.environ.get("POSTGRES_CONNECTION_STRING", "postgresql://localhost:5432/postgres")
 
         print("Connecting to MCP...")
 
@@ -67,18 +89,39 @@ class MCPClientManager:
                 if docker_path:
                     command = docker_path
 
+            # Resolve env block template values
+            env_block = srv_config.get("env", {})
+            resolved_env_block: dict[str, str] = {}
+            for k, v in env_block.items():
+                v = str(v)
+                v = v.replace("{{GITHUB_PERSONAL_ACCESS_TOKEN}}", github_token)
+                v = v.replace("{{FIRECRAWL_API_KEY}}", firecrawl_key)
+                v = v.replace("{{POSTGRES_CONNECTION_STRING}}", postgres_conn)
+                v = v.replace("{{WORKSPACE}}", workspace_dir)
+                v = v.replace("{{HOME}}", home_dir)
+                v = v.replace("{{PYTHON}}", python_executable)
+                resolved_env_block[k] = v
+
             resolved_args = []
             for arg in args:
                 arg_str = str(arg)
                 arg_str = arg_str.replace("{{WORKSPACE}}", workspace_dir)
+                arg_str = arg_str.replace("{{HOME}}", home_dir)
                 arg_str = arg_str.replace("{{PYTHON}}", python_executable)
+                arg_str = arg_str.replace("{{GITHUB_PERSONAL_ACCESS_TOKEN}}", github_token)
+                arg_str = arg_str.replace("{{FIRECRAWL_API_KEY}}", firecrawl_key)
+                arg_str = arg_str.replace("{{POSTGRES_CONNECTION_STRING}}", postgres_conn)
                 resolved_args.append(arg_str)
 
             try:
+                # Build merged env: system env + .env secrets + server-specific overrides
+                merged_env = os.environ.copy()
+                merged_env.update(dot_env)
+                merged_env.update(resolved_env_block)
                 server_params = StdioServerParameters(
                     command=command,
                     args=resolved_args,
-                    env=os.environ.copy()
+                    env=merged_env
                 )
                 # Enter stdio_client context
                 import subprocess
