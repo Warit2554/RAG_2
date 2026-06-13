@@ -44,7 +44,7 @@ async def route_query(query: str, history: list[dict[str, str]] | None = None) -
         lower = query.lower()
         if route in {"general", "rag"} and any(w in lower for w in ["save", "download", "write"]):
             # If they want to download or save, only keep as rag/code_analysis if there's explicit local codebase reference
-            has_local_ref = any(ind in lower for ind in [".py", ".js", ".ts", ".json", ".md", "class ", "def ", "config.py", "rag_local", "repo", "codebase", "workspace", "file", "document", "docs"])
+            has_local_ref = any(ind in lower for ind in [".py", ".js", ".ts", ".json", ".md", "class ", "def ", "config.py", "rag_local", "repo", "codebase", "repository"])
             if not has_local_ref:
                 route = "web_search"
         elif route == "general" and any(ind in lower for ind in [".py", ".js", ".ts", ".json", ".md", "class ", "def ", "config.py", "rag_local"]):
@@ -58,7 +58,7 @@ async def route_query(query: str, history: list[dict[str, str]] | None = None) -
         return RouterDecision(decision=decision, raw=raw)
     except Exception as exc:
         lower = query.lower()
-        has_local_ref = any(word in lower for word in ["file", "repo", "code", "bug", "function", "class", "stack trace", "traceback", "document", "docs", "markdown", "rag", "retrieve"])
+        has_local_ref = any(word in lower for word in ["repo", "code", "bug", "function", "class", "stack trace", "traceback", "markdown", "rag", "retrieve"])
         if any(word in lower for word in ["save", "download", "write"]):
             if not has_local_ref:
                 route = "web_search"

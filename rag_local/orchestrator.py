@@ -108,6 +108,8 @@ async def build_plan(state: RagState) -> ExecutionPlan:
             for idx, item in enumerate(parsed.get("tasks", [])[:4], start=1)
             if isinstance(item, dict) and str(item.get("kind", "")).lower() != "retrieve"
         ]
+        if not tasks:
+            raise ValueError("No valid tasks parsed from LLM plan.")
         return ExecutionPlan(
             objective=str(parsed.get("objective", state.user_input)),
             tasks=tasks,
@@ -260,12 +262,13 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
                 try:
                     client = OllamaClient()
                     extraction_prompt = (
-                        "Extract ONLY the main subject noun phrase the user wants an image of.\n"
-                        "Return just the noun phrase, nothing else. Examples:\n"
-                        "  'search for a dog picture and save it to my drive' → 'dog'\n"
-                        "  'find me a photo of a golden retriever' → 'golden retriever'\n"
-                        "  'download a picture of the Eiffel Tower' → 'Eiffel Tower'\n"
-                        "  'get me a cat image' → 'cat'\n"
+                        "You are an expert search keyword extractor and spelling corrector.\n"
+                        "Read the user's query, correct any obvious spelling typos (such as 'retiver' -> 'retriever', 'compute' -> 'computer'), and extract ONLY the main subject noun phrase they want a picture of.\n"
+                        "Return only the corrected subject noun phrase, nothing else. Examples:\n"
+                        "  'search for dog golden retiver and save' → 'golden retriever'\n"
+                        "  'find me a photo of a shiba inu' → 'shiba inu'\n"
+                        "  'get a picture of the eiffel tower' → 'Eiffel Tower'\n"
+                        "  'download a picture of apple compute' → 'apple computer'\n"
                         f"Query: {task.query}"
                     )
                     extracted = await client.chat(

@@ -12,7 +12,10 @@ _USER_AGENT = (
     "NexusRAG/1.0 (local AI assistant; image downloader) "
     "Mozilla/5.0 AppleWebKit/537.36 Chrome/120.0.0.0"
 )
-_WIKIMEDIA_AGENT = "NexusRAG/1.0 (local-ai-assistant; image-downloader) python-httpx"
+_WIKIMEDIA_AGENT = (
+    "NexusRAG/1.0 (https://github.com/waritchanaphai/RAG_2; "
+    "waritchanaphai@users.noreply.github.com) python-httpx"
+)
 
 
 async def download_image(url: str, save_dir: str) -> str:
@@ -20,7 +23,14 @@ async def download_image(url: str, save_dir: str) -> str:
     
     Returns the absolute path to the saved file.
     """
-    save_path = Path(save_dir).expanduser().resolve()
+    path_obj = Path(save_dir).expanduser().resolve()
+    base_name = "downloaded_image"
+    if path_obj.suffix:
+        save_path = path_obj.parent
+        base_name = path_obj.stem
+    else:
+        save_path = path_obj
+
     save_path.mkdir(parents=True, exist_ok=True)
 
     is_wikimedia = "wikimedia.org" in url or "wikipedia.org" in url
@@ -39,7 +49,7 @@ async def download_image(url: str, save_dir: str) -> str:
             
             # Case 1: The response is directly an image
             if "image/" in content_type:
-                return _save_bytes(resp.content, content_type, url, save_path)
+                return _save_bytes(resp.content, content_type, url, save_path, base_name)
             
             # Case 2: The response is HTML, search for image URLs in metadata/tags
             html = resp.text
@@ -82,7 +92,7 @@ async def download_image(url: str, save_dir: str) -> str:
             if "image/" not in img_content_type:
                 return f"Error: Extracted URL '{img_url}' did not return an image content type (got '{img_content_type}')."
                 
-            return _save_bytes(img_resp.content, img_content_type, img_url, save_path)
+            return _save_bytes(img_resp.content, img_content_type, img_url, save_path, base_name)
 
     except Exception as exc:
         return f"Error downloading from '{url}': {exc}"
@@ -92,12 +102,11 @@ async def search_for_image_url(query: str) -> str | None:
     """Search for a direct image URL (.jpg/.png/.webp/.gif) matching the query.
 
     Strategies (in order):
-    1. Wikimedia Commons search API — returns direct CDN image URLs, most reliable
-    2. DuckDuckGo Images JSON via vqd token
-    3. Unsplash source redirect (always returns a real JPEG)
-    4. Pixabay HTML scrape — CDN image URLs
-    5. DuckDuckGo HTML results → scrape og:image + all <img> src tags (relaxed)
-    6. Retry strategies 1, 3, 4 with a simplified (first-word) query
+    1. DuckDuckGo Images JSON via vqd token (typo-tolerant, highly relevant)
+    2. Pixabay HTML scrape — CDN image URLs
+    3. Wikimedia Commons search API — fallback
+    4. DuckDuckGo HTML results → scrape og:image + all <img> src tags (relaxed fallback)
+    5. Retry with a simplified (first-word) query
 
     Returns the first usable direct image URL, or None.
     """
@@ -115,6 +124,12 @@ async def search_for_image_url(query: str) -> str | None:
 
     async def _try_wikimedia(client: httpx.AsyncClient, search_query: str) -> str | None:
         try:
+            # Extract query terms, filtering out generic/filler words to ensure relevant matches
+            stop_words = {"photo", "image", "picture", "jpg", "png", "download", "save", "find", "get", "dog", "cat", "car", "cart"}
+            query_terms = [t.lower() for t in re.split(r'\W+', search_query) if t and len(t) > 2 and t.lower() not in stop_words]
+            if not query_terms:
+                query_terms = [t.lower() for t in re.split(r'\W+', search_query) if t and len(t) > 1]
+
             resp = await client.get(
                 "https://commons.wikimedia.org/w/api.php",
                 params={
@@ -135,7 +150,10 @@ async def search_for_image_url(query: str) -> str | None:
                 info = page.get("imageinfo", [{}])[0]
                 img_url = info.get("url", "")
                 if img_url and IMAGE_EXTS.search(img_url) and not BAD_KEYWORDS.search(img_url):
-                    return img_url
+                    # Validate that the image filename/URL contains at least one specific query keyword
+                    url_lower = img_url.lower()
+                    if any(term in url_lower for term in query_terms):
+                        return img_url
         except Exception:
             pass
         return None
@@ -170,19 +188,6 @@ async def search_for_image_url(query: str) -> str | None:
             pass
         return None
 
-    async def _try_unsplash(client: httpx.AsyncClient, search_query: str) -> str | None:
-        """Unsplash source redirect — always resolves to a real downloadable JPEG."""
-        try:
-            slug = urllib.parse.quote(search_query)
-            url = f"https://source.unsplash.com/800x600/?{slug}"
-            resp = await client.head(url, follow_redirects=True, timeout=12.0)
-            final_url = str(resp.url)
-            # Unsplash redirects to images.unsplash.com/photo-...
-            if "images.unsplash.com" in final_url or IMAGE_EXTS.search(final_url):
-                return final_url
-        except Exception:
-            pass
-        return None
 
     async def _try_pixabay_html(client: httpx.AsyncClient, search_query: str) -> str | None:
         """Scrape Pixabay search results for a direct CDN image URL."""
@@ -259,50 +264,62 @@ async def search_for_image_url(query: str) -> str | None:
 
     async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
 
-        # Strategy 1: Wikimedia Commons API
-        result = await _try_wikimedia(client, query)
-        if result:
-            return result
-
-        # Strategy 2: DuckDuckGo Images JSON API
+        # Strategy 1: DuckDuckGo Images JSON API (highly relevant, typo-tolerant)
         result = await _try_ddg_images_api(client, query)
         if result:
             return result
 
-        # Strategy 3: Unsplash source (nearly always works for real-world subjects)
-        result = await _try_unsplash(client, query)
-        if result:
-            return result
-
-        # Strategy 4: Pixabay HTML scrape
+        # Strategy 2: Pixabay HTML scrape
         result = await _try_pixabay_html(client, query)
         if result:
             return result
 
-        # Strategy 5: DuckDuckGo HTML → og:image + img tags (relaxed)
+        # Strategy 3: Wikimedia Commons API
+        result = await _try_wikimedia(client, query)
+        if result:
+            return result
+
+        # Strategy 4: DuckDuckGo HTML → og:image + img tags (relaxed fallback)
         result = await _try_ddg_html_scrape(client, query)
         if result:
             return result
 
-        # Strategy 6: Retry with simplified (first word) query — broadens the search
-        simplified = query.split()[0] if query.split() else query
-        if simplified.lower() != query.lower():
-            result = await _try_wikimedia(client, simplified)
+        # Strategy 5: Retry with simplified query (filtering out generic terms, and trying specific words)
+        generic_words = {"dog", "cat", "animal", "photo", "image", "picture", "file", "save", "download", "find", "get", "a", "an", "the", "some", "free", "stock"}
+        words = [w for w in query.split() if w.lower() not in generic_words]
+        
+        candidates = []
+        if words:
+            cleaned_query = " ".join(words)
+            if cleaned_query.lower() != query.lower():
+                candidates.append(cleaned_query)
+            # Add individual non-generic words
+            for w in words:
+                if w.lower() != query.lower() and w.lower() not in candidates:
+                    candidates.append(w)
+        else:
+            # Fallback to first word if everything was generic
+            first_word = query.split()[0] if query.split() else query
+            if first_word.lower() != query.lower():
+                candidates.append(first_word)
+                
+        for cand in candidates:
+            result = await _try_ddg_images_api(client, cand)
             if result:
                 return result
 
-            result = await _try_unsplash(client, simplified)
+            result = await _try_pixabay_html(client, cand)
             if result:
                 return result
 
-            result = await _try_pixabay_html(client, simplified)
+            result = await _try_wikimedia(client, cand)
             if result:
                 return result
 
     return None
 
 
-def _save_bytes(content: bytes, content_type: str, url: str, target_dir: Path) -> str:
+def _save_bytes(content: bytes, content_type: str, url: str, target_dir: Path, base_name: str = "downloaded_image") -> str:
     # Get extension based on Content-Type
     ext = mimetypes.guess_extension(content_type.split(";")[0])
     if not ext:
@@ -312,9 +329,6 @@ def _save_bytes(content: bytes, content_type: str, url: str, target_dir: Path) -
         if not ext or len(ext) > 5:
             ext = ".jpg"  # safe default
             
-    # Clean filename
-    base_name = "downloaded_image"
-    
     # Avoid overwriting files
     dest = target_dir / f"{base_name}{ext}"
     counter = 1
