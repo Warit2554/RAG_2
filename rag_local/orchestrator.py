@@ -30,6 +30,7 @@ Kinds and when to use them:
   Use this for ANY request that involves finding and saving a picture/image/file.
 - code: run Python code to analyze or inspect the LOCAL codebase only.
   NEVER use 'code' to download files, save images, or make network requests.
+- mcp: call specialized tools from connected MCP servers.
 
 CRITICAL RULES:
 - If the user wants to find/download/save an image or file → use kind: download
@@ -40,6 +41,8 @@ CRITICAL RULES:
 
 def _normalize_kind(kind: str, query: str) -> str:
     value = kind.strip().lower()
+    if value == "mcp":
+        return "mcp"
     if value in {"code", "code_analysis", "analysis"}:
         return "code"
     if value in {"web", "web_search", "search", "internet"}:
@@ -65,8 +68,26 @@ def _normalize_kind(kind: str, query: str) -> str:
 
 
 async def build_plan(state: RagState) -> ExecutionPlan:
+    from .mcp_client import mcp_manager
+    import json
+    all_tools = await mcp_manager.get_all_tools()
+    
+    tools_prompt = ""
+    if all_tools:
+        tools_prompt = "\nAvailable Dynamic MCP Tools you can run:\n"
+        for t in all_tools:
+            tools_prompt += (
+                f"- Server: {t['server_name']} | Tool: {t['name']}\n"
+                f"  Description: {t['description']}\n"
+                f"  Input Schema: {json.dumps(t['input_schema'])}\n"
+            )
+        tools_prompt += (
+            "\nTo use any of these dynamic MCP tools, you MUST set kind to 'mcp', and format query exactly as a JSON string: \n"
+            "  'query': '{\"server_name\": \"<server_name>\", \"tool_name\": \"<tool_name>\", \"arguments\": {<args>}}'\n"
+        )
+
     client = OllamaClient()
-    messages = build_messages(ORCHESTRATOR_SYSTEM, state.user_input, compress_history(state.chat_history))
+    messages = build_messages(ORCHESTRATOR_SYSTEM + tools_prompt, state.user_input, compress_history(state.chat_history))
     try:
         raw = await client.chat(
             SETTINGS.ollama_orchestrator_model,
@@ -106,6 +127,25 @@ async def build_plan(state: RagState) -> ExecutionPlan:
 
 
 async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerResult:
+    if task.kind == "mcp":
+        try:
+            import json
+            params = json.loads(task.query)
+            server_name = params["server_name"]
+            tool_name = params["tool_name"]
+            arguments = params.get("arguments", {})
+            
+            from .mcp_client import mcp_manager
+            result_str = await mcp_manager.call_tool(server_name, tool_name, arguments)
+            return WorkerResult(
+                task_name=task.name,
+                kind=task.kind,
+                success="Error" not in result_str,
+                summary=result_str,
+                artifacts=[{"server_name": server_name, "tool_name": tool_name, "arguments": arguments, "result": result_str}],
+            )
+        except Exception as exc:
+            return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=str(exc))
     if task.kind == "retrieve":
         retrieval = await hybrid_retrieve(task.query)
         summary = "\n".join(

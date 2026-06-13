@@ -1,0 +1,2 @@
+FROM python:3.11-slim
+RUN pip install --no-cache-dir mcp qdrant-client httpx rank-bm25 pydantic

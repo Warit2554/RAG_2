@@ -42,10 +42,13 @@ async def route_query(query: str, history: list[dict[str, str]] | None = None) -
         parsed = parsed if isinstance(parsed, dict) else {}
         route = parsed.get("route", "rag")
         lower = query.lower()
-        if route == "general" and any(ind in lower for ind in [".py", ".js", ".ts", ".json", ".md", "class ", "def ", "config.py", "rag_local"]):
+        if route in {"general", "rag"} and any(w in lower for w in ["save", "download", "write"]):
+            # If they want to download or save, only keep as rag/code_analysis if there's explicit local codebase reference
+            has_local_ref = any(ind in lower for ind in [".py", ".js", ".ts", ".json", ".md", "class ", "def ", "config.py", "rag_local", "repo", "codebase", "workspace", "file", "document", "docs"])
+            if not has_local_ref:
+                route = "web_search"
+        elif route == "general" and any(ind in lower for ind in [".py", ".js", ".ts", ".json", ".md", "class ", "def ", "config.py", "rag_local"]):
             route = "code_analysis"
-        if route == "general" and any(w in lower for w in ["save", "download", "write"]):
-            route = "web_search"
         
         decision = RouteDecision(
             route=route,
@@ -55,9 +58,15 @@ async def route_query(query: str, history: list[dict[str, str]] | None = None) -
         return RouterDecision(decision=decision, raw=raw)
     except Exception as exc:
         lower = query.lower()
-        if any(word in lower for word in ["file", "repo", "code", "bug", "function", "class", "stack trace", "traceback"]):
+        has_local_ref = any(word in lower for word in ["file", "repo", "code", "bug", "function", "class", "stack trace", "traceback", "document", "docs", "markdown", "rag", "retrieve"])
+        if any(word in lower for word in ["save", "download", "write"]):
+            if not has_local_ref:
+                route = "web_search"
+            else:
+                route = "code_analysis" if any(word in lower for word in ["code", "bug", "function", "class", "repo"]) else "rag"
+        elif any(word in lower for word in ["file", "repo", "code", "bug", "function", "class", "stack trace", "traceback"]):
             route = "code_analysis"
-        elif any(word in lower for word in ["news", "today", "latest", "current", "web", "internet", "save", "download", "write"]):
+        elif any(word in lower for word in ["news", "today", "latest", "current", "web", "internet"]):
             route = "web_search"
         elif any(word in lower for word in ["document", "docs", "markdown", "rag", "retrieve"]):
             route = "rag"

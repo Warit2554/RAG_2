@@ -1,0 +1,87 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-v",
+        "{{WORKSPACE}}:{{WORKSPACE}}",
+        "mcp/filesystem",
+        "{{WORKSPACE}}"
+      ]
+    },
+    "memory": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-v",
+        "{{WORKSPACE}}/docker_scripts:/workspace",
+        "-e",
+        "MEMORIES_FILEPATH=/workspace/memories.json",
+        "mcp/memory"
+      ]
+    },
+    "time": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "mcp/time"
+      ]
+    },
+    "sequential-thinking": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "mcp/sequentialthinking"
+      ]
+    },
+    "fetch": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "mcp/fetch"
+      ]
+    },
+    "duckduckgo": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "mcp/duckduckgo"
+      ]
+    },
+    "database": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network",
+        "host",
+        "--add-host",
+        "host.docker.internal:host-gateway",
+        "-e",
+        "QDRANT_URL=http://host.docker.internal:6333",
+        "-v",
+        "{{WORKSPACE}}:/workspace",
+        "-w",
+        "/workspace",
+        "nexus-mcp:latest",
+        "python",
+        "-m",
+        "rag_local.tools.database_mcp"
+      ]
+    }
+  }
+}

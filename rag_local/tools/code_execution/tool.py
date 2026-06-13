@@ -20,6 +20,15 @@ class SandboxResult:
 def run_python_in_docker(code: str, *, timeout_seconds: int = 20) -> SandboxResult:
     docker = shutil.which("docker")
     if not docker:
+        for path in [
+            "/usr/local/bin/docker",
+            "/opt/homebrew/bin/docker",
+            "/Applications/Docker.app/Contents/Resources/bin/docker",
+        ]:
+            if Path(path).exists():
+                docker = path
+                break
+    if not docker:
         return SandboxResult(
             success=False,
             stdout="",

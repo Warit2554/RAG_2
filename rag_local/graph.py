@@ -32,6 +32,29 @@ class GraphState(TypedDict, total=False):
 
 
 async def router_node(state: GraphState) -> dict[str, Any]:
+    from .mcp_client import mcp_manager
+    import atexit
+    
+    # Lazy initialization of MCP servers on first graph invocation
+    if not mcp_manager.sessions and not getattr(mcp_manager, "_started", False):
+        mcp_manager._started = True
+        await mcp_manager.start_all()
+        
+        # Register atexit handler to ensure subprocesses are cleaned up on exit
+        def cleanup_mcp():
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(mcp_manager.stop_all())
+                else:
+                    loop.run_until_complete(mcp_manager.stop_all())
+            except Exception:
+                try:
+                    asyncio.run(mcp_manager.stop_all())
+                except Exception:
+                    pass
+        atexit.register(cleanup_mcp)
+
     if not state.get("clarification_response"):
         from pathlib import Path
         workspace = str(Path(".").resolve())
@@ -59,6 +82,7 @@ async def router_node(state: GraphState) -> dict[str, Any]:
             "2. `options`: Exactly 2 context-aware choices as human-readable labels (embed the real value in the label if applicable, e.g. 'Active Workspace: /path/to/dir').\n"
             "3. `paths`: Exactly 2 selectable values (absolute paths, enum values, or descriptive strings) corresponding 1:1 with options.\n"
             "4. `default_index`: 0 (always recommend option 1).\n\n"
+            "CRITICAL PATH RULE: If you are asking the user where to save a file, download an image, or write search results, you MUST put the Active Workspace as the first choice (options[0] and paths[0]) and the Downloads folder as the second choice (options[1] and paths[1]). This ensures the Active Workspace is always the default/recommended path.\n\n"
             f"Context:\n"
             f"- Active Workspace: {workspace}\n"
             f"- Downloads folder: {downloads}\n\n"
@@ -89,6 +113,16 @@ async def router_node(state: GraphState) -> dict[str, Any]:
                 fallback_paths = [workspace, downloads]
                 sanitized_paths = []
                 for i, opt_text in enumerate(options):
+                    opt_lower = opt_text.lower()
+                    workspace_name = Path(workspace).name.lower()
+                    # Force matching if the option explicitly refers to the workspace or downloads folder
+                    if "workspace" in opt_lower or (workspace_name and workspace_name in opt_lower):
+                        sanitized_paths.append(workspace)
+                        continue
+                    if "downloads" in opt_lower:
+                        sanitized_paths.append(downloads)
+                        continue
+
                     # Get the LLM-provided path/value for this option
                     llm_val = str(raw_paths[i]).strip() if i < len(raw_paths) else ""
 

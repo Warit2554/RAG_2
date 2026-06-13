@@ -28,6 +28,45 @@ fi
 echo -e "${GREEN}✓ Virtual environment ready${NC}"
 
 # ─────────────────────────────────────────────
+# 2.5. Environment File Setup
+# ─────────────────────────────────────────────
+if [ ! -f ".env" ]; then
+    echo "Copying .env.example to .env..."
+    cp .env.example .env
+    echo -e "${GREEN}✓ Created .env file${NC}"
+else
+    echo -e "${GREEN}✓ .env file already exists${NC}"
+fi
+
+# ─────────────────────────────────────────────
+# 2.6. Configure Ollama Host IP
+# ─────────────────────────────────────────────
+echo ""
+echo -e "${YELLOW}--- Ollama Configuration ---${NC}"
+read -p "Enter Ollama host IP (default: localhost): " ollama_ip
+if [ -z "$ollama_ip" ]; then
+    ollama_ip="localhost"
+fi
+
+# Update .env using Python (platform-independent)
+python3 -c "
+import sys
+with open('.env', 'r') as f:
+    lines = f.readlines()
+has_host = False
+with open('.env', 'w') as f:
+    for line in lines:
+        if line.startswith('OLLAMA_HOST='):
+            f.write('OLLAMA_HOST=http://' + sys.argv[1] + ':11434\n')
+            has_host = True
+        else:
+            f.write(line)
+    if not has_host:
+        f.write('\nOLLAMA_HOST=http://' + sys.argv[1] + ':11434\n')
+" "$ollama_ip"
+echo -e "${GREEN}✓ Set OLLAMA_HOST to http://${ollama_ip}:11434 in .env${NC}"
+
+# ─────────────────────────────────────────────
 # 3. Upgrade pip and install package
 # ─────────────────────────────────────────────
 echo "Installing package and dependencies..."
@@ -196,6 +235,24 @@ else
     fi
 fi
 
+# ─────────────────────────────────────────────
+# 4.5. Start Qdrant Database
+# ─────────────────────────────────────────────
+echo ""
+echo -e "${YELLOW}--- Starting Qdrant Database ---${NC}"
+if command -v docker-compose &>/dev/null; then
+    echo "Starting Qdrant using docker-compose..."
+    docker-compose up -d
+    echo -e "${GREEN}✓ Qdrant started${NC}"
+elif docker compose version &>/dev/null; then
+    echo "Starting Qdrant using docker compose..."
+    docker compose up -d
+    echo -e "${GREEN}✓ Qdrant started${NC}"
+else
+    echo -e "${RED}Warning: docker-compose or docker compose not found. Could not start Qdrant automatically.${NC}"
+    echo "Please make sure Qdrant is running on port 6333."
+fi
+
 
 # ─────────────────────────────────────────────
 # 5. Pre-pull the Python sandbox image
@@ -209,7 +266,72 @@ else
 fi
 
 # ─────────────────────────────────────────────
-# 6. Export configuration instructions
+# 6. Build and Pre-pull MCP Server Docker Images
+# ─────────────────────────────────────────────
+echo ""
+echo -e "${YELLOW}--- Build & Pre-pull MCP Docker Images ---${NC}"
+
+# Build custom Python database server image
+if [ -f "docker_scripts/Dockerfile.mcp" ]; then
+    echo "Building custom Python MCP server image (nexus-mcp:latest)..."
+    if docker build -t nexus-mcp:latest -f docker_scripts/Dockerfile.mcp .; then
+        echo -e "${GREEN}✓ Custom Python MCP image built: nexus-mcp:latest${NC}"
+    else
+        echo -e "${RED}Warning: Failed to build nexus-mcp:latest.${NC}"
+    fi
+fi
+
+# Pull official OCI MCP catalog images
+echo "Pre-pulling official OCI MCP catalog images..."
+for img in mcp/filesystem mcp/memory mcp/time mcp/sequentialthinking mcp/fetch mcp/duckduckgo; do
+    echo "Pulling $img..."
+    if docker pull "$img" &>/dev/null; then
+        echo -e "${GREEN}✓ Ready: $img${NC}"
+    else
+        echo -e "${YELLOW}Warning: Could not pull $img.${NC}"
+    fi
+done
+
+# ─────────────────────────────────────────────
+# 6.5. Ollama Setup
+# ─────────────────────────────────────────────
+echo ""
+echo -e "${YELLOW}--- Ollama Connection Check ---${NC}"
+
+# Read Ollama Host and Models from .env
+OLLAMA_HOST_VAL="http://localhost:11434"
+if [ -f ".env" ]; then
+    OLLAMA_HOST_VAL=$(grep "^OLLAMA_HOST=" .env | cut -d'=' -f2- | tr -d '\r')
+fi
+
+# Fallback if empty
+if [ -z "$OLLAMA_HOST_VAL" ]; then
+    OLLAMA_HOST_VAL="http://localhost:11434"
+fi
+
+echo "Checking Ollama daemon at $OLLAMA_HOST_VAL..."
+if curl -s --connect-timeout 2 "$OLLAMA_HOST_VAL" &>/dev/null; then
+    echo -e "${GREEN}✓ Ollama daemon is running${NC}"
+else
+    echo -e "${YELLOW}Warning: Ollama daemon not running at $OLLAMA_HOST_VAL.${NC}"
+    echo "Please make sure Ollama is started."
+fi
+
+# Show the models the user needs to pull manually
+echo ""
+echo "Note: Auto-pulling models is disabled. Please ensure the following models are pulled in Ollama:"
+if [ -f ".env" ]; then
+    grep "OLLAMA_.*_MODEL" .env | while read -r line; do
+        m_name=$(echo "$line" | cut -d'=' -f2 | tr -d '\r')
+        echo -e "   ${GREEN}ollama pull $m_name${NC}"
+    done
+else
+    echo -e "   ${GREEN}ollama pull llama3.1:8b${NC}"
+    echo -e "   ${GREEN}ollama pull nomic-embed-text${NC}"
+fi
+
+# ─────────────────────────────────────────────
+# 7. Export configuration instructions
 # ─────────────────────────────────────────────
 BIN_PATH="$(pwd)/.venv/bin"
 echo ""

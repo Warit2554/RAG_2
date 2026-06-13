@@ -17,6 +17,7 @@ dependencies = [
   "rank-bm25>=0.2.2",
   "tree-sitter>=0.22.0",
   "typing_extensions>=4.12.0",
+  "mcp>=0.1.0",
 ]
 
 

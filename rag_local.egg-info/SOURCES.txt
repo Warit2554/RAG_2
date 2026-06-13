@@ -7,6 +7,7 @@ rag_local/config.py
 rag_local/embed.py
 rag_local/graph.py
 rag_local/ingest.py
+rag_local/mcp_client.py
 rag_local/memory.py
 rag_local/orchestrator.py
 rag_local/router.py
@@ -18,6 +19,9 @@ rag_local.egg-info/dependency_links.txt
 rag_local.egg-info/entry_points.txt
 rag_local.egg-info/requires.txt
 rag_local.egg-info/top_level.txt
+rag_local/tools/database_mcp.py
+rag_local/tools/search_fetch_mcp.py
+rag_local/tools/time_mcp.py
 rag_local/tools/code_execution/tool.py
 rag_local/tools/git_inspector/tool.py
 rag_local/tools/image_downloader/tool.py
