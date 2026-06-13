@@ -55,7 +55,11 @@ async def router_node(state: GraphState) -> dict[str, Any]:
                     pass
         atexit.register(cleanup_mcp)
 
-    if not state.get("clarification_response"):
+    decision = await route_query(state["user_input"], state.get("chat_history"))
+    route = decision.decision.route
+    reason = decision.decision.reason
+
+    if route != "general" and not state.get("clarification_response"):
         from pathlib import Path
         workspace = str(Path(".").resolve())
         downloads = str(Path("~/Downloads").expanduser().resolve())
@@ -154,12 +158,11 @@ async def router_node(state: GraphState) -> dict[str, Any]:
                     "paths": sanitized_paths,
                     "default_index": int(parsed.get("default_index", 0)),
                 }
-                return {"route": "clarification", "clarification_prompt": prompt}
+                return {"route": "clarification", "clarification_prompt": prompt, "route_reason": reason}
         except Exception:
             pass
 
-    decision = await route_query(state["user_input"], state.get("chat_history"))
-    return {"route": decision.decision.route, "route_reason": decision.decision.reason}
+    return {"route": route, "route_reason": reason}
 
 
 async def general_node(state: GraphState) -> dict[str, Any]:

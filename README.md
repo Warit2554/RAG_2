@@ -87,3 +87,33 @@ chainlit run rag_local/ui/chainlit.py
 - If Docker is unavailable, the sandbox tool returns a clear error instead of falling back to host execution.
 - The repository currently contains only the implementation plan documents, so the first ingestion pass will index those files unless you point it at a different directory.
 - The graph is built with LangGraph and the local assistant defaults to safe, broadly available Ollama model names. You can point the environment variables at the exact router/orchestrator/embedding models you prefer.
+
+RAG_2/
+├── generate_script/        # Contains scripts created by or run via Docker
+│   ├── extract_image.py    # Python script executing in Docker to download images
+│   └── extract_image.md    # Auto-generated documentation for the docker script
+│
+├── indexes/                # Stores local indexing metadata (e.g. local BM25 sidecar database)
+│
+├── qdrant_local/           # Persistent volume storage for the local Qdrant Vector database
+│
+├── scratch/                # Experimental scripts and temporary scratchpad workspace files
+│
+└── rag_local/              # Core Application Source Directory
+    ├── cli.py              # The Nexus interactive REPL terminal loop (started by the 'nexus' command)
+    ├── config.py           # Config manager (Ollama hosts, models, database directories, etc.)
+    ├── embed.py            # Interfaces with local Ollama service for chat generation and embeddings
+    ├── graph.py            # LangGraph state machine orchestrating the router, planning, execution, and synthesis steps
+    ├── ingest.py           # Ingestion pipeline parsing local documents with AST chunkers and loading them to Qdrant
+    ├── memory.py           # Summarizes/compresses chat history to fit inside the local model's context window
+    ├── router.py           # Routes incoming queries to 'general', 'rag', 'code_analysis', or 'web_search'
+    ├── orchestrator.py     # LLM planner that creates tasks and coordinates execution
+    ├── types.py            # Type declarations and dataclasses for state variables
+    │
+    └── tools/              # Specialized tools executed by the RAG orchestrator tasks:
+        ├── code_execution/ # Executes python scripts safely inside an isolated Docker sandbox container
+        ├── git_inspector/  # Runs read-only Git commands (diff, log, status) on the local repo
+        ├── image_downloader/# Downloads images from URL sources using search-and-fallback logic
+        ├── retrieval/      # Queries Qdrant dense vector search combined with a BM25 sparse index
+        ├── web_scraper/    # Scrapes and parses webpage content from specific target URLs
+        └── web_search/     # Searches the internet using SearXNG or DuckDuckGo fallback
