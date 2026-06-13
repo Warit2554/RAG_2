@@ -171,6 +171,7 @@ SUGGESTIONS = [
     ("/model", "Select Ollama LLM chat model"),
     ("/embedding", "Select Ollama embedding model"),
     ("/theme", "Select CLI color theme"),
+    ("/tools", "List all available MCP tools"),
     ("/ingest", "Re-index workspace files"),
     ("/interactive", "Configure interactive mode"),
     ("/clear", "Reset conversation history"),
@@ -769,6 +770,86 @@ class CliRepl:
         self.interactive_mode = "strict"
         self.interactive_timeout = 60
 
+    async def _cmd_tools(self, theme: "Theme", mcp_manager: Any, parts: list[str]) -> None:
+        """
+        /tools                    — list all servers + tool counts
+        /tools <server>           — list all tools on a specific server
+        /tools <server> <tool>    — live-test call a tool (no args) to verify it works
+        """
+        # Wait briefly if MCP is still starting
+        if not mcp_manager.sessions:
+            print(f"{theme.secondary}[MCP]\033[0m No servers connected yet. Try again in a moment.")
+            print()
+            return
+
+        all_tools = await mcp_manager.get_all_tools()
+
+        # ── /tools  (no args) — status table ─────────────────────────────────
+        if len(parts) == 1:
+            # Group by server
+            server_tools: dict[str, list[str]] = {}
+            for t in all_tools:
+                server_tools.setdefault(t["server_name"], []).append(t["name"])
+
+            total_servers = len(mcp_manager.sessions)
+            total_tools   = len(all_tools)
+
+            print(f"\n{theme.primary}{'━' * 58}\033[0m")
+            print(f"{theme.primary}  MCP TOOL STATUS  —  {total_servers} servers  •  {total_tools} tools\033[0m")
+            print(f"{theme.primary}{'━' * 58}\033[0m\n")
+
+            for server, tools in sorted(server_tools.items()):
+                bar   = f"{theme.secondary}●\033[0m"
+                count = f"{theme.primary}{len(tools):>3}\033[0m tools"
+                print(f"  {bar} {server:<22} {count}")
+
+            print()
+            print(f"  {theme.secondary}Usage:\033[0m  /tools <server>           — list tools")
+            print(f"          /tools <server> <tool>   — test-call a tool")
+            print()
+            return
+
+        # ── /tools <server>  — list tools on that server ──────────────────────
+        target_server = parts[1]
+        server_tool_list = [t for t in all_tools if t["server_name"] == target_server]
+
+        if not server_tool_list:
+            # Fuzzy match suggestion
+            available = sorted({t["server_name"] for t in all_tools})
+            print(f"\n{theme.secondary}[Tools]\033[0m Server '\033[1m{target_server}\033[0m' not found.")
+            print(f"  Available: {', '.join(available)}")
+            print()
+            return
+
+        if len(parts) == 2:
+            print(f"\n{theme.primary}{'━' * 58}\033[0m")
+            print(f"{theme.primary}  {target_server}  —  {len(server_tool_list)} tools\033[0m")
+            print(f"{theme.primary}{'━' * 58}\033[0m\n")
+            for t in sorted(server_tool_list, key=lambda x: x["name"]):
+                desc = (t.get("description") or "").split("\n")[0][:60]
+                print(f"  {theme.secondary}▸\033[0m {t['name']:<30} \033[90m{desc}\033[0m")
+            print()
+            return
+
+        # ── /tools <server> <tool>  — live test-call ──────────────────────────
+        target_tool = parts[2]
+        match = next((t for t in server_tool_list if t["name"] == target_tool), None)
+        if not match:
+            available_names = sorted(t["name"] for t in server_tool_list)
+            print(f"\n{theme.secondary}[Tools]\033[0m Tool '\033[1m{target_tool}\033[0m' not found on '{target_server}'.")
+            print(f"  Available: {', '.join(available_names[:10])}")
+            print()
+            return
+
+        print(f"\n{theme.secondary}[Tools]\033[0m Testing \033[1m{target_server}/{target_tool}\033[0m ...")
+        result = await mcp_manager.call_tool(target_server, target_tool, {})
+        if result.startswith("Error"):
+            print(f"  \033[31m✗ {result}\033[0m")
+        else:
+            preview = result[:300] + ("..." if len(result) > 300 else "")
+            print(f"  \033[32m✓ Tool responded:\033[0m\n{preview}")
+        print()
+
     async def ingest(self) -> None:
         theme = ACTIVE_THEME
         print(f"\n{theme.secondary}[Ingestion]\033[0m Indexing workspace directory...")
@@ -796,18 +877,8 @@ class CliRepl:
         from .mcp_client import mcp_manager
         import atexit
 
-        # ── Background MCP startup ──────────────────────────────────
-        # Fire-and-forget: the prompt appears immediately.
-        # A shared Event signals when startup is complete.
-        _mcp_ready = asyncio.Event()
-        _mcp_bg_task: asyncio.Task | None = None
-
-        async def _start_mcp_bg() -> None:
-            mcp_manager._started = True
-            await mcp_manager.start_all()
-            _mcp_ready.set()
-
-        _mcp_bg_task = asyncio.create_task(_start_mcp_bg())
+        mcp_manager._started = True
+        await mcp_manager.start_all()
 
         def cleanup_mcp():
             # atexit handler: best-effort sync cleanup (event loop may be closed)
@@ -819,7 +890,6 @@ class CliRepl:
                 pass
         atexit.register(cleanup_mcp)
 
-        print(f"{theme.secondary}[MCP]\033[0m Connecting to MCP servers in background...")
         print()
 
         current_answer = []
@@ -860,6 +930,11 @@ class CliRepl:
                 if query == "/clear":
                     self.history = []
                     print(f"{theme.secondary}[System]\033[0m Conversation history cleared.")
+                    continue
+
+                if query.startswith("/tools"):
+                    parts = query.split(None, 2)  # /tools [server] [tool_name]
+                    await self._cmd_tools(theme, mcp_manager, parts)
                     continue
 
                 if query == "/ingest":
@@ -996,22 +1071,6 @@ class CliRepl:
                         }
                     }
 
-                    # ── Wait for MCP if still connecting (max 15s) ──────────
-                    if not _mcp_ready.is_set():
-                        mcp_spinner = ThinkingSpinner(theme, "Waiting for MCP servers")
-                        mcp_spinner.start()
-                        try:
-                            await asyncio.wait_for(
-                                asyncio.shield(asyncio.ensure_future(_mcp_ready.wait())),
-                                timeout=15.0,
-                            )
-                        except asyncio.TimeoutError:
-                            pass
-                        finally:
-                            mcp_spinner.stop()
-                            if not _mcp_ready.is_set():
-                                _mcp_ready.set()  # unblock future queries
-                                print(f"{theme.secondary}[MCP]\033[0m Timed out waiting for servers — proceeding without MCP.")
 
                     graph_input = {"user_input": query, "chat_history": self.history}
                     if clarification_response:
@@ -1171,16 +1230,7 @@ class CliRepl:
         loop.set_exception_handler(lambda _loop, _ctx: None)
 
         async def _shutdown() -> None:
-            # 1. Cancel the background MCP startup task if still running
-            nonlocal _mcp_bg_task
-            if _mcp_bg_task and not _mcp_bg_task.done():
-                _mcp_bg_task.cancel()
-                try:
-                    await _mcp_bg_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-
-            # 2. Stop all MCP server subprocesses (inline, while event loop is live)
+            # Stop all MCP server subprocesses (inline, while event loop is live)
             try:
                 await asyncio.wait_for(mcp_manager.stop_all(), timeout=3.0)
             except Exception:

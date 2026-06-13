@@ -18,31 +18,21 @@ from .types import ExecutionPlan, PlanTask, RagState, WorkerResult
 from .utils import safe_json_loads
 
 
-ORCHESTRATOR_SYSTEM = """You are a local RAG orchestrator.
-Create a short JSON plan with keys objective, tasks, response_style.
-Each task must have name, kind, query, priority.
+ORCHESTRATOR_SYSTEM = """You are a local RAG orchestrator that uses MCP (Model Context Protocol) tools.
+Create a short JSON plan with keys: objective, tasks, response_style.
+Each task must have: name, kind, query, priority.
 
-Kinds and when to use them:
-- retrieve: search local indexed documents for information.
-- web: search the internet for fresh information (news, facts, links).
-- scrape: fetch and read the full content of a specific web URL.
-- git: inspect git history, status, commits, branches, or diffs.
-- download: download any image, photo, or file from the internet and save it to disk.
-  Use this for ANY request that involves finding and saving a picture/image/file.
-- code: run Python code to analyze or inspect the LOCAL codebase only.
-  NEVER use 'code' to download files, save images, or make network requests.
-  NEVER use 'code' when the user wants to CREATE or SAVE a script/file to disk.
-- write: generate content and SAVE IT TO DISK as a file (e.g., .sh, .py, .txt scripts).
-  Use this when the user asks to 'create X and save as Y' or 'write a script to Z file'.
-  Format query as: '{"filename": "/absolute/path/to/file.sh", "description": "what the file should contain"}'
-- mcp: call specialized tools from connected MCP servers.
+The ONLY valid kinds are:
+- retrieve: search locally indexed documents for information about the codebase.
+- mcp: call a tool from a connected MCP server for everything else.
+
+For 'mcp' tasks, format query EXACTLY as a JSON string:
+  '{"server_name": "<server>", "tool_name": "<tool>", "arguments": {<args>}}'
 
 CRITICAL RULES:
-- If the user wants to find/download/save an image or file from internet → use kind: download
-- If the user wants to CREATE a script/file and save it to disk → use kind: write
-- If the user wants to analyze code, check bugs, or inspect the repo → use kind: code
-- Do NOT use 'code' for anything involving network access or file downloads.
-- Do NOT use 'code' when the user says 'save as .sh', 'save as .py', 'write to file', etc.
+- Use kind 'mcp' for ALL tool calls (web search, file operations, git, code, browser, etc.).
+- Use kind 'retrieve' ONLY for searching local indexed documents.
+- Do NOT use any other kind value.
 """
 
 
@@ -146,99 +136,11 @@ async def build_plan(state: RagState) -> ExecutionPlan:
 
 
 async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerResult:
-    if task.kind == "mcp":
-        try:
-            import json
-            params = json.loads(task.query)
-            server_name = params["server_name"]
-            tool_name = params["tool_name"]
-            arguments = params.get("arguments", {})
-            
-            from .mcp_client import mcp_manager
-            result_str = await mcp_manager.call_tool(server_name, tool_name, arguments)
-            return WorkerResult(
-                task_name=task.name,
-                kind=task.kind,
-                success="Error" not in result_str,
-                summary=result_str,
-                artifacts=[{"server_name": server_name, "tool_name": tool_name, "arguments": arguments, "result": result_str}],
-            )
-        except Exception as exc:
-            return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=str(exc))
-    if task.kind == "write":
-        import json as _json
-        import re
-        try:
-            # Parse the query: either a JSON with filename+description, or plain natural language
-            params = {}
-            try:
-                params = _json.loads(task.query)
-            except Exception:
-                pass
+    """Execute a single task.  Only 'mcp' and 'retrieve' are live; all other kinds
+    are re-routed through MCP automatically."""
+    import json as _json
 
-            filename = params.get("filename", "")
-            description = params.get("description", task.query)
-
-            # If no filename parsed, extract from natural language
-            if not filename:
-                sh_match = re.search(r'[\w./-]+\.(?:sh|py|txt|bash|zsh|fish|ps1|bat|cmd)', task.query, re.IGNORECASE)
-                filename = sh_match.group(0) if sh_match else "output.sh"
-                # Make absolute if relative
-                if not filename.startswith("/"):
-                    from pathlib import Path as _Path
-                    filename = str(_Path(".").resolve() / filename)
-                description = task.query
-
-            # Generate file content using LLM
-            client = OllamaClient()
-            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "sh"
-            lang_map = {"sh": "bash", "bash": "bash", "zsh": "bash", "py": "python", "txt": "text", "fish": "fish", "ps1": "powershell"}
-            lang = lang_map.get(ext, ext)
-            gen_system = (
-                f"You are an expert {lang} script writer.\n"
-                f"Generate a complete, working {lang} script that: {description}\n"
-                f"Output ONLY the raw script content — no markdown fences, no explanation."
-            )
-            content = await client.chat(
-                SETTINGS.ollama_chat_model,
-                build_messages(gen_system, description),
-                temperature=0.1,
-                keep_alive=SETTINGS.rag_keep_alive,
-            )
-            # Strip markdown fences if model included them anyway
-            content = re.sub(r'^```[\w]*\n?', '', content.strip(), flags=re.MULTILINE)
-            content = re.sub(r'\n?```$', '', content.strip(), flags=re.MULTILINE)
-            content = content.strip()
-
-            # Write via filesystem MCP if available, else write directly
-            from .mcp_client import mcp_manager
-            wrote_via_mcp = False
-            if "filesystem" in mcp_manager.sessions:
-                try:
-                    result_str = await mcp_manager.call_tool(
-                        "filesystem", "write_file",
-                        {"path": filename, "content": content}
-                    )
-                    wrote_via_mcp = True
-                    summary = f"✓ Written to `{filename}` via filesystem MCP.\n\nContent preview:\n```{lang}\n{content[:800]}{'...' if len(content) > 800 else ''}\n```"
-                except Exception as mcp_exc:
-                    pass  # fallback to direct write
-
-            if not wrote_via_mcp:
-                from pathlib import Path as _Path
-                _Path(filename).parent.mkdir(parents=True, exist_ok=True)
-                _Path(filename).write_text(content, encoding="utf-8")
-                summary = f"✓ Written to `{filename}` (direct write).\n\nContent preview:\n```{lang}\n{content[:800]}{'...' if len(content) > 800 else ''}\n```"
-
-            return WorkerResult(
-                task_name=task.name,
-                kind=task.kind,
-                success=True,
-                summary=summary,
-                artifacts=[{"filename": filename, "content": content}],
-            )
-        except Exception as exc:
-            return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=f"Write failed: {exc}")
+    # ── retrieve: local vector store (kept as-is) ─────────────────────────────
     if task.kind == "retrieve":
         retrieval = await hybrid_retrieve(task.query)
         summary = "\n".join(
@@ -252,167 +154,79 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
             summary=summary,
             artifacts=[hit.model_dump() for hit in retrieval.hits],
         )
-    if task.kind == "web":
+
+    # ── mcp: call MCP tool directly ───────────────────────────────────────────
+    if task.kind == "mcp":
+        from .mcp_client import mcp_manager
         try:
-            results = await local_web_search(task.query)
-            summary = "\n".join(f"- {r.title} {r.url}" for r in results) or "No local web search results."
+            # Try to parse structured query first
+            try:
+                params = _json.loads(task.query)
+            except Exception:
+                # query is plain text → try to infer the best MCP tool
+                params = {"server_name": "duckduckgo", "tool_name": "search", "arguments": {"query": task.query}}
+
+            server_name = params.get("server_name", "")
+            tool_name   = params.get("tool_name", "")
+            arguments   = params.get("arguments", {})
+
+            if not server_name or not tool_name:
+                return WorkerResult(task_name=task.name, kind=task.kind, success=False,
+                                    summary="MCP task missing server_name or tool_name.")
+
+            result_str = await mcp_manager.call_tool(server_name, tool_name, arguments)
             return WorkerResult(
                 task_name=task.name,
                 kind=task.kind,
-                success=True,
-                summary=summary,
-                artifacts=[r.__dict__ for r in results],
+                success="Error" not in result_str,
+                summary=result_str,
+                artifacts=[{"server_name": server_name, "tool_name": tool_name,
+                            "arguments": arguments, "result": result_str}],
             )
         except Exception as exc:
             return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=str(exc))
-    if task.kind == "code":
-        import re
-        client = OllamaClient()
-        coder_system = (
-            "You are a helpful software engineering assistant.\n"
-            "Generate standard Python 3 code that executes in a sandbox to answer the following request.\n"
-            "The repository files are mounted read-only at `/repo`. Your script should look at `/repo` to analyze the code.\n"
-            "Your output must contain ONLY the raw python code inside a single markdown code block (e.g. ```python ... ```). Do not include any explanation before or after the code block."
+
+    # ── legacy local kinds → redirect to MCP ─────────────────────────────────
+    # These should no longer appear (orchestrator prompt forbids them) but if they
+    # do (e.g. LLM hallucination) we gracefully forward to the closest MCP server.
+    from .mcp_client import mcp_manager
+    fallback = _LOCAL_KIND_TO_MCP.get(task.kind)
+    if fallback and mcp_manager.sessions:
+        server_name = fallback["server_name"]
+        tool_name   = fallback["tool_name"]
+        # Build best-effort arguments
+        if task.kind in {"web"}:
+            arguments = {"query": task.query}
+        elif task.kind == "scrape":
+            import re as _re
+            url_match = _re.search(r"https?://\S+", task.query)
+            arguments = {"url": url_match.group(0) if url_match else task.query}
+        elif task.kind == "git":
+            arguments = {"repo_path": ".", "command": "git status"}
+        elif task.kind in {"code"}:
+            arguments = {"command": task.query, "timeout_seconds": 30}
+        elif task.kind in {"write", "download"}:
+            arguments = {"path": "output.txt", "content": task.query}
+        else:
+            arguments = {"query": task.query}
+
+        result_str = await mcp_manager.call_tool(server_name, tool_name, arguments)
+        return WorkerResult(
+            task_name=task.name,
+            kind="mcp",
+            success="Error" not in result_str,
+            summary=result_str,
+            artifacts=[{"redirected_from": task.kind, "server_name": server_name,
+                        "tool_name": tool_name, "result": result_str}],
         )
-        try:
-            raw_code = await client.chat(
-                SETTINGS.ollama_chat_model,
-                build_messages(coder_system, task.query),
-                temperature=0.1,
-                keep_alive=SETTINGS.rag_keep_alive,
-            )
-            match = re.search(r"```python\s*(.*?)\s*```", raw_code, re.DOTALL)
-            if not match:
-                match = re.search(r"```\s*(.*?)\s*```", raw_code, re.DOTALL)
-            code_to_run = match.group(1) if match else raw_code.strip()
-            
-            sandboxed = run_python_in_docker(
-                code_to_run,
-                timeout_seconds=15,
-            )
-            return WorkerResult(
-                task_name=task.name,
-                kind=task.kind,
-                success=sandboxed.success,
-                summary=sandboxed.stdout.strip() or sandboxed.stderr.strip() or "Code tool executed.",
-                artifacts=[{"code_run": code_to_run, "stdout": sandboxed.stdout, "stderr": sandboxed.stderr, "exit_code": sandboxed.exit_code}],
-            )
-        except Exception as exc:
-            return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=str(exc))
-    if task.kind == "scrape":
-        try:
-            import re
-            url_match = re.search(r"https?://\S+", task.query)
-            url = url_match.group(0) if url_match else task.query.strip()
-            content = await scrape_url(url)
-            return WorkerResult(
-                task_name=task.name,
-                kind=task.kind,
-                success="Error scraping URL" not in content,
-                summary=content[:1500] + ("..." if len(content) > 1500 else ""),
-                artifacts=[{"url": url, "content": content}],
-            )
-        except Exception as exc:
-            return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=str(exc))
-    if task.kind == "git":
-        try:
-            parts = task.query.strip().split()
-            if parts and parts[0].lower() == "git":
-                git_args = parts[1:]
-            else:
-                git_args = parts
-            if not git_args:
-                git_args = ["status"]
-            res = run_git_command(git_args)
-            return WorkerResult(
-                task_name=task.name,
-                kind=task.kind,
-                success="Disallowed" not in res and "Unauthorized" not in res and "Git error" not in res,
-                summary=res,
-                artifacts=[{"command": f"git {' '.join(git_args)}", "output": res}],
-            )
-        except Exception as exc:
-            return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=str(exc))
-    if task.kind == "download":
-        try:
-            save_dir = str(SETTINGS.rag_data_dir.resolve())
-            if state and state.clarification_response:
-                resp = state.clarification_response.strip()
-                # Only use as save_dir if it looks like a filesystem path
-                if resp.startswith("/") or resp.startswith("~") or resp.startswith(".\\") or (len(resp) > 1 and resp[1] == ":"):
-                    save_dir = resp
-            url = None
-            import re
-            # If the query contains a direct image URL, use it
-            url_match = re.search(r"https?://\S+\.(?:jpg|jpeg|png|webp|gif|bmp)", task.query, re.IGNORECASE)
-            if url_match:
-                url = url_match.group(0)
-            # Otherwise use LLM to extract the real search subject noun, then find an image
-            if not url:
-                search_topic = task.query
-                try:
-                    client = OllamaClient()
-                    extraction_prompt = (
-                        "You are an expert search keyword extractor and spelling corrector.\n"
-                        "Read the user's query, correct any obvious spelling typos (such as 'retiver' -> 'retriever', 'compute' -> 'computer'), and extract ONLY the main subject noun phrase they want a picture of.\n"
-                        "Return only the corrected subject noun phrase, nothing else. Examples:\n"
-                        "  'search for dog golden retiver and save' → 'golden retriever'\n"
-                        "  'find me a photo of a shiba inu' → 'shiba inu'\n"
-                        "  'get a picture of the eiffel tower' → 'Eiffel Tower'\n"
-                        "  'download a picture of apple compute' → 'apple computer'\n"
-                        f"Query: {task.query}"
-                    )
-                    extracted = await client.chat(
-                        SETTINGS.ollama_router_model,
-                        [{"role": "user", "content": extraction_prompt}],
-                        temperature=0.0,
-                        keep_alive=SETTINGS.rag_keep_alive,
-                    )
-                    extracted = extracted.strip().strip('"').strip("'")
-                    if extracted and len(extracted) < 60:
-                        search_topic = extracted
-                except Exception:
-                    # Fallback: strip common filler words with regex
-                    search_topic = re.sub(
-                        r"\b(search for|find|get|download|save|a|an|the|picture|photo|image|file|to my drive|to my computer|and|me|please)\b",
-                        "", task.query, flags=re.IGNORECASE
-                    ).strip() or task.query
-                url = await search_for_image_url(search_topic)
 
-                # If still no URL, retry with alternate phrasings
-                if not url:
-                    for alt_query in [f"{search_topic} photo", f"{search_topic} image", search_topic.split()[0] if search_topic.split() else search_topic]:
-                        url = await search_for_image_url(alt_query)
-                        if url:
-                            break
+    return WorkerResult(task_name=task.name, kind=task.kind, success=False,
+                        summary=f"Unknown task kind '{task.kind}'. Only 'mcp' and 'retrieve' are supported.")
 
-            if not url:
-                return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary="Could not find a usable image URL after trying multiple search strategies.")
-            res = await download_image(url, save_dir)
-            # If the download failed, try up to 2 more candidate URLs by re-running with a different query
-            if "Error" in res:
-                for alt_query in [f"{search_topic} stock photo", f"{search_topic} free image"]:
-                    alt_url = await search_for_image_url(alt_query)
-                    if alt_url and alt_url != url:
-                        res2 = await download_image(alt_url, save_dir)
-                        if "Success" in res2:
-                            res = res2
-                            url = alt_url
-                            break
-
-            return WorkerResult(
-                task_name=task.name,
-                kind=task.kind,
-                success="Success" in res,
-                summary=res,
-                artifacts=[{"source_url": url, "save_dir": save_dir, "result": res}],
-            )
-        except Exception as exc:
-            return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=str(exc))
-    return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary="Unknown task kind.")
 
 
 async def run_parallel_tasks(plan: ExecutionPlan, state: RagState) -> list[WorkerResult]:
+
     ordered = sorted(plan.tasks, key=lambda item: item.priority)
     return await asyncio.gather(*(execute_task(task, state) for task in ordered))
 
