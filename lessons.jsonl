@@ -4,3 +4,15 @@
 {"ts": "2026-06-14T08:24:00.903630+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
 {"ts": "2026-06-14T08:24:37.245496+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
 {"ts": "2026-06-14T08:24:37.246283+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-14T08:44:06.382806+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-14T08:44:06.383732+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-14T08:45:41.529430+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-14T08:45:41.530100+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-14T08:47:53.814753+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-14T08:47:53.815617+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-14T08:48:52.062914+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-14T08:48:52.063776+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-14T08:50:04.270912+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-14T08:50:04.271784+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-14T08:52:52.832411+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-14T08:52:52.833342+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}

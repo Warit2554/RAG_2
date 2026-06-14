@@ -9,6 +9,29 @@ import httpx
 from .config import SETTINGS
 
 
+_current_run_llm_calls: list[dict[str, Any]] = []
+
+
+def clear_run_llm_calls() -> None:
+    global _current_run_llm_calls
+    _current_run_llm_calls.clear()
+
+
+def get_run_llm_calls() -> list[dict[str, Any]]:
+    global _current_run_llm_calls
+    return list(_current_run_llm_calls)
+
+
+def record_llm_call(model: str, messages: list[dict[str, str]], response: str, format: str | None = None) -> None:
+    global _current_run_llm_calls
+    _current_run_llm_calls.append({
+        "model": model,
+        "format": format,
+        "messages": messages,
+        "response": response
+    })
+
+
 @dataclass(slots=True)
 class OllamaClient:
     host: str = SETTINGS.ollama_host
@@ -37,13 +60,23 @@ class OllamaClient:
             payload["keep_alive"] = keep_alive
         if format:
             payload["format"] = format
+
+        if SETTINGS.verbose_mode:
+            print(f"\n\033[93m[Verbose - Chat Request]\033[0m Model: {model} | Format: {format}")
+            for msg in messages:
+                print(f"\033[96m[{msg.get('role', 'unknown').upper()}]\033[0m {msg.get('content')}")
+
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             if stream:
                 return await client.post(self._url("/api/chat"), json=payload)
             response = await client.post(self._url("/api/chat"), json=payload)
             response.raise_for_status()
             data = response.json()
-            return data["message"]["content"]
+            content = data["message"]["content"]
+            record_llm_call(model, messages, content, format)
+            if SETTINGS.verbose_mode:
+                print(f"\033[92m[Response]\033[0m {content}\n")
+            return content
 
     async def chat_stream(
         self,
@@ -64,6 +97,14 @@ class OllamaClient:
             payload["keep_alive"] = keep_alive
         if format:
             payload["format"] = format
+
+        if SETTINGS.verbose_mode:
+            print(f"\n\033[93m[Verbose - Chat Stream Request]\033[0m Model: {model} | Format: {format}")
+            for msg in messages:
+                print(f"\033[96m[{msg.get('role', 'unknown').upper()}]\033[0m {msg.get('content')}")
+            print(f"\033[92m[Streaming Response]\033[0m ", end="", flush=True)
+
+        full_response = []
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             async with client.stream("POST", self._url("/api/chat"), json=payload) as response:
                 response.raise_for_status()
@@ -76,8 +117,14 @@ class OllamaClient:
                         continue
                     delta = data.get("message", {}).get("content")
                     if delta:
+                        full_response.append(delta)
+                        if SETTINGS.verbose_mode:
+                            print(delta, end="", flush=True)
                         yield delta
                     if data.get("done"):
+                        record_llm_call(model, messages, "".join(full_response), format)
+                        if SETTINGS.verbose_mode:
+                            print("\n")
                         break
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:

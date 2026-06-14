@@ -177,6 +177,7 @@ SUGGESTIONS = [
     ("/ingest", "Re-index workspace files"),
     ("/interactive", "Configure interactive mode"),
     ("/force-do", "Force retry until task succeeds"),
+    ("/verbose", "Toggle verbose mode (thinking and answering)"),
     ("/clear", "Reset conversation history"),
     ("/exit", "Quit RAG CLI"),
 ]
@@ -812,8 +813,8 @@ class CliRepl:
     def __init__(self) -> None:
         self.history: list[dict[str, str]] = []
         self.command_history: list[str] = load_command_history()
-        self.interactive_mode = "strict"
-        self.interactive_timeout = 60
+        self.interactive_mode = SETTINGS.interactive_mode
+        self.interactive_timeout = SETTINGS.interactive_timeout
         self.force_do = False          # True while /force-do is active
         self.force_do_max_retries = 8  # safety ceiling
 
@@ -1161,9 +1162,14 @@ class CliRepl:
                         mode = parts[1].lower()
                         if mode in {"strict", "timeout", "auto"}:
                             self.interactive_mode = mode
+                            SETTINGS.interactive_mode = mode
+                            save_env_setting("NEXUS_INTERACTIVE_MODE", mode)
                             if mode == "timeout" and len(parts) >= 3:
                                 try:
-                                    self.interactive_timeout = int(parts[2])
+                                    t_val = int(parts[2])
+                                    self.interactive_timeout = t_val
+                                    SETTINGS.interactive_timeout = t_val
+                                    save_env_setting("NEXUS_INTERACTIVE_TIMEOUT", str(t_val))
                                 except ValueError:
                                     pass
                             print(f"{theme.secondary}[System]\033[0m Interactive mode set to: {mode}" + (f" (timeout={self.interactive_timeout}s)" if mode == "timeout" else ""))
@@ -1171,6 +1177,29 @@ class CliRepl:
                             print(f"\033[31m[Error]\033[0m Invalid interactive mode. Use: strict, timeout, or auto.")
                     else:
                         print(f"{theme.secondary}[System]\033[0m Current interactive mode: {self.interactive_mode}" + (f" (timeout={self.interactive_timeout}s)" if self.interactive_mode == "timeout" else ""))
+                    print()
+                    continue
+
+                if query.startswith("/verbose"):
+                    parts = query.split()
+                    if len(parts) >= 2:
+                        val = parts[1].lower()
+                        if val in {"on", "true", "yes", "1"}:
+                            SETTINGS.verbose_mode = True
+                            save_env_setting("NEXUS_VERBOSE", "true")
+                        elif val in {"off", "false", "no", "0"}:
+                            SETTINGS.verbose_mode = False
+                            save_env_setting("NEXUS_VERBOSE", "false")
+                        else:
+                            print(f"\033[31m[Error]\033[0m Invalid verbose state. Use: on or off.")
+                            print()
+                            continue
+                    else:
+                        SETTINGS.verbose_mode = not SETTINGS.verbose_mode
+                        save_env_setting("NEXUS_VERBOSE", "true" if SETTINGS.verbose_mode else "false")
+                    
+                    state_label = "\033[32mON\033[0m" if SETTINGS.verbose_mode else "\033[31mOFF\033[0m"
+                    print(f"{theme.secondary}[System]\033[0m Verbose logging mode: {state_label}")
                     print()
                     continue
 
@@ -1194,6 +1223,8 @@ class CliRepl:
                 clarification_response = None
                 force_attempt = 0
                 while True:
+                    from rag_local.embed import clear_run_llm_calls
+                    clear_run_llm_calls()
                     current_answer.clear()
                     first_token = True
                     config = {
@@ -1447,6 +1478,75 @@ class CliRepl:
                 if answer_text and not final_state.get("clarification_prompt"):
                     self.history.append({"role": "user", "content": query})
                     self.history.append({"role": "assistant", "content": answer_text})
+
+                    # ── Save Conversation Log to /.nexus ─────────────────────
+                    try:
+                        import json as _json
+                        from datetime import datetime
+                        from rag_local.config import WORKSPACE_DIR
+                        
+                        nexus_dir = WORKSPACE_DIR / ".nexus"
+                        nexus_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+                        log_file = nexus_dir / f"conversation_{timestamp}.json"
+                        
+                        from rag_local.embed import get_run_llm_calls
+                        
+                        log_data = {
+                            "timestamp": datetime.now().isoformat(),
+                            "user_query": query,
+                            "assistant_response": answer_text,
+                            "route": final_state.get("route"),
+                            "context": {
+                                "memory_context": final_state.get("memory_context", ""),
+                                "retrieved_chunks": [
+                                    {
+                                        "id": hit.id,
+                                        "source_path": hit.source_path,
+                                        "content": hit.content,
+                                        "score": hit.score,
+                                        "title": hit.title,
+                                        "summary": hit.summary
+                                    }
+                                    for hit in final_state.get("retrieved_chunks", [])
+                                ] if final_state.get("retrieved_chunks") else []
+                            },
+                            "thinking": get_run_llm_calls(),
+                            "plan": {
+                                "objective": getattr(final_state.get("plan"), "objective", ""),
+                                "success_criteria": getattr(final_state.get("plan"), "success_criteria", []),
+                                "constraints": getattr(final_state.get("plan"), "constraints", []),
+                                "tasks": [
+                                    {
+                                        "name": t.name,
+                                        "kind": t.kind,
+                                        "query": t.query,
+                                        "priority": t.priority,
+                                        "depends_on": t.depends_on,
+                                        "artifact_targets": t.artifact_targets,
+                                        "verification_rules": t.verification_rules
+                                    }
+                                    for t in getattr(final_state.get("plan"), "tasks", [])
+                                ] if final_state.get("plan") else []
+                            },
+                            "artifacts": [
+                                {
+                                    "path": getattr(art, "path", None) or (art.get("path") if isinstance(art, dict) else ""),
+                                    "verified": getattr(art, "verified", None) or (art.get("verified") if isinstance(art, dict) else False)
+                                }
+                                for art in artifacts
+                            ],
+                            "confidence": {
+                                "score": getattr(final_state.get("confidence"), "score", None),
+                                "reason": getattr(final_state.get("confidence"), "reason", ""),
+                                "needs_verification": getattr(final_state.get("confidence"), "needs_verification", False)
+                            } if final_state.get("confidence") else None
+                        }
+                        
+                        log_file.write_text(_json.dumps(log_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                    except Exception:
+                        pass
                 print("\n")
 
             except KeyboardInterrupt:

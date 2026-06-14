@@ -40,7 +40,7 @@ class Settings:
     rag_keep_alive: str = _env("RAG_KEEP_ALIVE", "1h")
     nexus_theme: str = _env("NEXUS_THEME", "Classic Theme")
     rag_plan_max_tasks: int = int(_env("RAG_PLAN_MAX_TASKS", "8"))
-    mcp_ops_timeout: float = float(_env("MCP_OPS_TIMEOUT", "300.0"))
+    mcp_ops_timeout: float = float(_env("MCP_OPS_TIMEOUT", "1200.0"))
 
     # ── Caching ────────────────────────────────────────────────────────────────
     cache_enabled: bool = _env("NEXUS_CACHE_ENABLED", "true").lower() == "true"
@@ -56,6 +56,10 @@ class Settings:
     confidence_threshold: float = float(_env("NEXUS_CONFIDENCE_THRESHOLD", "0.6"))
     verification_enabled: bool = _env("NEXUS_VERIFICATION_ENABLED", "true").lower() == "true"
 
+    # ── Interactive Mode ────────────────────────────────────────────────────────
+    interactive_mode: str = _env("NEXUS_INTERACTIVE_MODE", "strict")
+    interactive_timeout: int = int(_env("NEXUS_INTERACTIVE_TIMEOUT", "60"))
+
     # ── Agent Memory ────────────────────────────────────────────────────────────
     agent_memory_enabled: bool = _env("NEXUS_AGENT_MEMORY_ENABLED", "true").lower() == "true"
     agent_memory_top_k: int = int(_env("NEXUS_AGENT_MEMORY_TOP_K", "5"))
@@ -65,6 +69,7 @@ class Settings:
     prompts_dir: Path = Path(_env("NEXUS_PROMPTS_DIR", "./prompts")).expanduser()
 
     # ── Observability ────────────────────────────────────────────────────────────
+    verbose_mode: bool = _env("NEXUS_VERBOSE", "false").lower() == "true"
     audit_log_enabled: bool = _env("NEXUS_AUDIT_LOG", "true").lower() == "true"
     audit_log_path: Path = Path(_env("NEXUS_AUDIT_LOG_PATH", "./nexus_audit.jsonl")).expanduser()
 
