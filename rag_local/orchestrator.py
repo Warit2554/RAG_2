@@ -31,10 +31,14 @@ _LOCAL_KIND_TO_MCP = {
 }
 
 ORCHESTRATOR_SYSTEM = """You are a local RAG orchestrator that uses MCP (Model Context Protocol) tools.
-Create a JSON plan with keys: objective, success_criteria, tasks, response_style.
+Create a JSON plan with keys: objective, constraints, success_criteria, tasks, response_style, confidence.
 
+'objective' is the desired outcome extracted from the user's input.
+'constraints' is a list of strict constraints, limitations, or rules extracted or implied from the user's input.
 'success_criteria' is an array of strings representing verifiable success criteria for the request.
-Each task must have: name, kind, query, priority.
+'confidence' is a float (0.0-1.0) reflecting your certainty the plan will succeed.
+
+Each task must have: name, kind, query, priority, depends_on (list of task names), can_parallel (bool), artifact_targets (list of paths expected to be created/changed), verification_rules (list of assertions, e.g., "file_exists", "exit_code_0", "output_contains:<str>", "service_listening:<port>").
 
 The ONLY valid kinds are:
 - retrieve: search locally indexed documents for information about the codebase.
@@ -183,10 +187,28 @@ async def build_plan(state: RagState) -> ExecutionPlan:
     if memory_context:
         system_prompt += "\n\n" + memory_context
 
+    # ── Collect host world state and inject into prompt ────────────────────────
+    from .world_state import collect_world_state
+    world_state = await collect_world_state(mcp_manager)
+    world_state_prompt = (
+        "HOST WORLD STATE:\n"
+        f"- Operating System: {world_state.get('os')}\n"
+        f"- Installed software / CLI utilities: {', '.join(world_state.get('installed_software', []))}\n"
+        f"- Workspace files: {world_state.get('workspace_files')}\n"
+        f"- Active Docker containers: {world_state.get('docker_containers')}\n"
+        f"- Running services: {world_state.get('running_services')}\n"
+    )
+    system_prompt += "\n\n" + world_state_prompt
+
     client = OllamaClient()
     # Use async LLM compression for better context quality
     history = await compress_history_async(state.chat_history, use_llm=False)
     messages = build_messages(system_prompt, state.user_input, history)
+    
+    raw = None
+    parsed = None
+
+    # Attempt 1: Constrained JSON mode
     try:
         raw = await client.chat(
             SETTINGS.ollama_orchestrator_model,
@@ -196,41 +218,62 @@ async def build_plan(state: RagState) -> ExecutionPlan:
             format="json",
         )
         parsed = safe_json_loads(raw)
-        parsed = parsed if isinstance(parsed, dict) else {}
-        
-        def _parse_query(q: Any) -> str:
-            if isinstance(q, dict):
-                return json.dumps(q)
-            return str(q)
-
-        tasks = [
-            PlanTask(
-                name=item.get("name", f"task_{idx}"),
-                kind=_normalize_kind(str(item.get("kind", "")), str(item.get("query", state.user_input))),
-                query=_parse_query(item.get("query", state.user_input)),
-                priority=int(item.get("priority", idx)),
-            )
-            for idx, item in enumerate(parsed.get("tasks", [])[:SETTINGS.rag_plan_max_tasks], start=1)
-            if isinstance(item, dict) and str(item.get("kind", "")).lower() != "retrieve"
-        ]
-        if not tasks:
-            raise ValueError("No valid tasks parsed from LLM plan.")
-        return ExecutionPlan(
-            objective=str(parsed.get("objective", state.user_input)),
-            tasks=tasks,
-            response_style=str(parsed.get("response_style", "concise")),
-            success_criteria=parsed.get("success_criteria", []),
-        )
-    except ValueError as exc:
-        logging.warning("[build_plan] No valid tasks from LLM output: %s", exc)
-    except json.JSONDecodeError as exc:
-        logging.warning("[build_plan] LLM returned invalid JSON: %s", exc)
+        if not parsed or not isinstance(parsed, dict) or "tasks" not in parsed:
+            raise ValueError("First attempt failed to return valid JSON tasks.")
     except Exception as exc:
-        import httpx as _httpx
-        if isinstance(exc, (_httpx.ConnectError, _httpx.TimeoutException)):
-            logging.warning("[build_plan] Ollama unreachable: %s", exc)
-        else:
-            logging.warning("[build_plan] Unexpected error: %s", exc)
+        logging.warning("[build_plan] JSON-constrained call failed or timed out: %s. Retrying without JSON constraint...", exc)
+        
+        # Attempt 2: Unconstrained mode with regex-based JSON extraction
+        try:
+            raw = await client.chat(
+                SETTINGS.ollama_orchestrator_model,
+                messages,
+                temperature=0.2,
+                keep_alive=SETTINGS.rag_keep_alive,
+            )
+            parsed = safe_json_loads(raw)
+            if not parsed or not isinstance(parsed, dict):
+                raise ValueError("Second attempt failed to parse JSON from text response.")
+        except Exception as exc2:
+            import httpx as _httpx
+            if isinstance(exc2, (_httpx.ConnectError, _httpx.TimeoutException)):
+                logging.warning("[build_plan] Ollama unreachable: %s", exc2)
+            else:
+                logging.warning("[build_plan] Unexpected error during planning: %s", exc2)
+
+    if parsed and isinstance(parsed, dict):
+        try:
+            def _parse_query(q: Any) -> str:
+                if isinstance(q, dict):
+                    return json.dumps(q)
+                return str(q)
+
+            tasks = [
+                PlanTask(
+                    name=item.get("name", f"task_{idx}"),
+                    kind=_normalize_kind(str(item.get("kind", "")), str(item.get("query", state.user_input))),
+                    query=_parse_query(item.get("query", state.user_input)),
+                    priority=int(item.get("priority", idx)),
+                    depends_on=list(item.get("depends_on", [])),
+                    can_parallel=bool(item.get("can_parallel", True)),
+                    artifact_targets=list(item.get("artifact_targets", [])),
+                    verification_rules=list(item.get("verification_rules", [])),
+                )
+                for idx, item in enumerate(parsed.get("tasks", [])[:SETTINGS.rag_plan_max_tasks], start=1)
+                if isinstance(item, dict) and str(item.get("kind", "")).lower() != "retrieve"
+            ]
+            if tasks:
+                return ExecutionPlan(
+                    objective=str(parsed.get("objective", state.user_input)),
+                    tasks=tasks,
+                    response_style=str(parsed.get("response_style", "concise")),
+                    success_criteria=parsed.get("success_criteria", []),
+                    constraints=parsed.get("constraints", []),
+                )
+            else:
+                logging.warning("[build_plan] Plan contains no valid tasks.")
+        except Exception as exc:
+            logging.warning("[build_plan] Error parsing tasks from parsed plan: %s", exc)
 
     # Keyword-based fallback plan
     lower = state.user_input.lower()
@@ -239,9 +282,9 @@ async def build_plan(state: RagState) -> ExecutionPlan:
         tasks.append(PlanTask(name="code_inspection", kind="code", query=state.user_input, priority=0))
     if any(word in lower for word in ["search", "news", "latest", "current", "today", "web", "internet"]):
         tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=1))
-    if any(word in lower for word in ["save", "download", "write"]):
+    if any(word in lower for word in ["save", "download", "write", "create", "script", "generate"]):
         tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=0))
-        tasks.append(PlanTask(name="image_download", kind="download", query=state.user_input, priority=1))
+        tasks.append(PlanTask(name="file_creation", kind="write", query=state.user_input, priority=1))
     return ExecutionPlan(objective=state.user_input, tasks=tasks, response_style="concise", success_criteria=[])
 
 
@@ -474,10 +517,11 @@ async def run_parallel_tasks(plan: ExecutionPlan, state: RagState) -> list[Worke
 
     # Store outcomes in embedding memory for future runs
     memory = get_agent_memory()
-    for task, res in zip(
-        sorted(plan.tasks, key=lambda t: t.priority),
-        results,
-    ):
+    task_map = {t.name: t for t in state.plan.tasks}
+    for res in results:
+        task = task_map.get(res.task_name)
+        if not task:
+            continue
         try:
             tool_call = task.query if isinstance(task.query, str) else str(task.query)
             await memory.store_task_outcome(
@@ -591,3 +635,123 @@ async def synthesize(state: RagState, config: Any = None) -> str:
         if state.general_answer:
             parts.append(state.general_answer)
         return "\n".join(parts) if len(parts) > 1 else "No model available to synthesize a response."
+
+
+REPLANNER_SYSTEM = """You are a local RAG orchestrator that dynamically adapts execution plans when a task fails.
+An execution plan was running, but a task failed. You need to analyze the failure and generate an alternative execution plan to complete the objective.
+
+Return a JSON plan with keys: objective, constraints, success_criteria, tasks, response_style, confidence.
+
+Each task must have: name, kind, query, priority, depends_on (list of task names), can_parallel (bool), artifact_targets (list of paths expected to be created/changed), verification_rules (list of assertions, e.g., "file_exists", "exit_code_0", "output_contains:<str>", "service_listening:<port>").
+
+The ONLY valid kinds are:
+- retrieve: search locally indexed documents.
+- mcp: call a tool from a connected MCP server.
+
+In your plan, exclude tasks that have already completed successfully. Focus ONLY on the alternative strategy to recover and finish the objective.
+"""
+
+
+async def build_replan(
+    state: RagState,
+    failed_task_name: str,
+    error_message: str,
+    mcp_manager: Any = None
+) -> ExecutionPlan | None:
+    """Invoked when a task fails to generate a replacement plan to accomplish the remaining objective."""
+    import json
+    
+    completed_tasks = []
+    for r in state.code_results + state.web_results:
+        if r.success or r.healed:
+            completed_tasks.append(f"- Task '{r.task_name}' succeeded. Outcome: {r.summary[:300]}")
+        else:
+            completed_tasks.append(f"- Task '{r.task_name}' FAILED. Error: {r.summary[:300]}")
+
+    replan_context = (
+        f"OBJECTIVE: {state.plan.objective if state.plan else state.user_input}\n"
+        f"FAILED TASK: '{failed_task_name}'\n"
+        f"ERROR ENCOUNTERED: {error_message}\n\n"
+        "EXECUTION HISTORY:\n"
+        + "\n".join(completed_tasks)
+    )
+
+    system_prompt = REPLANNER_SYSTEM
+    
+    # Inject world state
+    from .world_state import collect_world_state
+    world_state = await collect_world_state(mcp_manager)
+    world_state_prompt = (
+        "HOST WORLD STATE:\n"
+        f"- Operating System: {world_state.get('os')}\n"
+        f"- Installed software / CLI utilities: {', '.join(world_state.get('installed_software', []))}\n"
+        f"- Workspace files: {world_state.get('workspace_files')}\n"
+        f"- Active Docker containers: {world_state.get('docker_containers')}\n"
+        f"- Running services: {world_state.get('running_services')}\n"
+    )
+    system_prompt += "\n\n" + world_state_prompt
+
+    client = OllamaClient()
+    history = await compress_history_async(state.chat_history, use_llm=False)
+    messages = build_messages(system_prompt, replan_context, history)
+
+    parsed = None
+    # Attempt 1: Constrained JSON Mode
+    try:
+        raw = await client.chat(
+            SETTINGS.ollama_orchestrator_model,
+            messages,
+            temperature=0.2,
+            keep_alive=SETTINGS.rag_keep_alive,
+            format="json",
+        )
+        parsed = safe_json_loads(raw)
+        if not parsed or not isinstance(parsed, dict) or "tasks" not in parsed:
+            raise ValueError("First replan attempt failed to return valid JSON tasks.")
+    except Exception as exc:
+        logging.warning("[Replanner] JSON-constrained replan failed: %s. Retrying without constraint...", exc)
+        # Attempt 2: Unconstrained Mode
+        try:
+            raw = await client.chat(
+                SETTINGS.ollama_orchestrator_model,
+                messages,
+                temperature=0.2,
+                keep_alive=SETTINGS.rag_keep_alive,
+            )
+            parsed = safe_json_loads(raw)
+        except Exception as exc2:
+            logging.error("[Replanner] Replanning failed completely: %s", exc2)
+
+    if parsed and isinstance(parsed, dict) and "tasks" in parsed:
+        try:
+            def _parse_query(q: Any) -> str:
+                if isinstance(q, dict):
+                    return json.dumps(q)
+                return str(q)
+
+            tasks = [
+                PlanTask(
+                    name=item.get("name", f"task_{idx}"),
+                    kind=_normalize_kind(str(item.get("kind", "")), str(item.get("query", state.user_input))),
+                    query=_parse_query(item.get("query", state.user_input)),
+                    priority=int(item.get("priority", idx)),
+                    depends_on=list(item.get("depends_on", [])),
+                    can_parallel=bool(item.get("can_parallel", True)),
+                    artifact_targets=list(item.get("artifact_targets", [])),
+                    verification_rules=list(item.get("verification_rules", [])),
+                )
+                for idx, item in enumerate(parsed.get("tasks", [])[:SETTINGS.rag_plan_max_tasks], start=1)
+                if isinstance(item, dict) and str(item.get("kind", "")).lower() != "retrieve"
+            ]
+            if tasks:
+                return ExecutionPlan(
+                    objective=str(parsed.get("objective", state.plan.objective if state.plan else state.user_input)),
+                    tasks=tasks,
+                    response_style=str(parsed.get("response_style", "concise")),
+                    success_criteria=parsed.get("success_criteria", []),
+                    constraints=parsed.get("constraints", []),
+                )
+        except Exception as exc:
+            logging.warning("[Replanner] Error parsing tasks from replan: %s", exc)
+            
+    return None

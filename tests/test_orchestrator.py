@@ -158,3 +158,48 @@ async def test_legacy_download_kind_uses_curl_not_write_file():
     assert "https://example.com/file.iso" not in call["arguments"].get("content", ""), (
         "download kind must not write the URL as file content"
     )
+
+
+@pytest.mark.asyncio
+async def test_plan_retries_without_json_format_on_first_failure():
+    """If first attempt (JSON format) fails or is unreachable, build_plan must retry without format constraint."""
+    from rag_local.orchestrator import build_plan
+    from rag_local.types import RagState
+
+    captured_formats: list[str | None] = []
+
+    async def mock_chat_fn(model, messages, *, format=None, **kwargs):
+        captured_formats.append(format)
+        if len(captured_formats) == 1:
+            raise ValueError("Simulated JSON constraint error")
+        return json.dumps({
+            "objective": "Retry success",
+            "success_criteria": ["succeeds on retry"],
+            "tasks": [
+                {
+                    "name": "retried_task",
+                    "kind": "mcp",
+                    "query": {"server_name": "duckduckgo", "tool_name": "search", "arguments": {"query": "retried"}},
+                    "priority": 1
+                }
+            ],
+            "response_style": "concise"
+        })
+
+    with (
+        patch("rag_local.orchestrator.OllamaClient.chat", new_callable=AsyncMock, side_effect=mock_chat_fn),
+        patch("rag_local.mcp_client.mcp_manager.get_all_tools", new_callable=AsyncMock, return_value=[]),
+    ):
+        state = RagState(user_input="check storage", route="rag")
+        plan = await build_plan(state)
+        
+        # Verify both attempts were made: first with JSON format, second without
+        assert len(captured_formats) == 2
+        assert captured_formats[0] == "json"
+        assert captured_formats[1] is None
+        
+        # Verify retry plan was parsed successfully
+        assert plan.objective == "Retry success"
+        assert len(plan.tasks) == 1
+        assert plan.tasks[0].name == "retried_task"
+

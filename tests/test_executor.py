@@ -164,3 +164,104 @@ async def test_verification_passes_clean_result():
     result = WorkerResult(task_name="t", kind="mcp", success=True, summary="Found 3 results for your query.")
     passed, msg = await agent.check(task, result)
     assert passed
+
+
+@pytest.mark.asyncio
+async def test_verification_custom_rules():
+    """VerificationAgent must respect custom verification_rules and artifact_targets."""
+    from rag_local.executor import VerificationAgent
+    from rag_local.types import WorkerResult, PlanTask
+    
+    agent = VerificationAgent()
+    
+    # 1. file_exists check
+    task_file = PlanTask(
+        name="write",
+        kind="write",
+        query="test",
+        artifact_targets=["test_artifact.txt"],
+        verification_rules=["file_exists"]
+    )
+    result_ok = WorkerResult(task_name="write", kind="write", success=True, summary="wrote data")
+    
+    with (
+        patch("os.path.exists", return_value=True),
+        patch("os.stat") as mock_stat
+    ):
+        mock_stat.return_value.st_size = 100
+        passed, msg = await agent.check(task_file, result_ok, tool_name="write_file")
+        assert passed
+        
+    with patch("os.path.exists", return_value=False):
+        passed, msg = await agent.check(task_file, result_ok, tool_name="write_file")
+        assert not passed
+        assert "not found" in msg.lower() or "exist" in msg.lower()
+
+    # 2. exit_code_0 check
+    task_code = PlanTask(
+        name="cmd",
+        kind="code",
+        query="echo ok",
+        verification_rules=["exit_code_0"]
+    )
+    result_err = WorkerResult(task_name="cmd", kind="code", success=True, summary="Exit Code: 2\nError description")
+    passed, msg = await agent.check(task_code, result_err)
+    assert not passed
+    assert "exit code 2" in msg.lower() or "non-zero exit code" in msg.lower()
+
+    # 3. output_contains check
+    task_contains = PlanTask(
+        name="greet",
+        kind="mcp",
+        query="test",
+        verification_rules=["output_contains:welcome"]
+    )
+    res_no = WorkerResult(task_name="greet", kind="mcp", success=True, summary="hello user")
+    res_yes = WorkerResult(task_name="greet", kind="mcp", success=True, summary="welcome user")
+    
+    assert not (await agent.check(task_contains, res_no))[0]
+    assert (await agent.check(task_contains, res_yes))[0]
+
+
+@pytest.mark.asyncio
+async def test_run_tasks_dynamic_replanning():
+    """When a task fails, run_tasks must invoke build_replan and execute the alternative plan."""
+    from rag_local.executor import run_tasks
+    from rag_local.types import ExecutionPlan, PlanTask, WorkerResult, RagState
+    
+    # Initial plan: task_a (will fail)
+    task_a = PlanTask(name="task_a", kind="mcp", query="query_a", priority=0)
+    plan = ExecutionPlan(objective="do a", tasks=[task_a], success_criteria=["done"])
+    state = RagState(user_input="do a", plan=plan)
+
+    # Replanned plan: task_b (will succeed)
+    task_b = PlanTask(name="task_b", kind="mcp", query="query_b", priority=0)
+    replan = ExecutionPlan(objective="do a", tasks=[task_b], success_criteria=["done"])
+    
+    # We will simulate task_a execution failing, and task_b execution succeeding
+    executed_tasks = []
+
+    async def mock_execute_single_task(task, state, metrics):
+        executed_tasks.append(task.name)
+        if task.name == "task_a":
+            return WorkerResult(task_name="task_a", kind="mcp", success=False, summary="failed_a")
+        else:
+            return WorkerResult(task_name="task_b", kind="mcp", success=True, summary="succeeded_b")
+
+    with (
+        patch("rag_local.executor.execute_single_task", side_effect=mock_execute_single_task),
+        patch("rag_local.orchestrator.build_replan", new_callable=AsyncMock, return_value=replan) as mock_replan,
+    ):
+        results = await run_tasks(plan, state)
+        
+        # Verify executed order
+        assert executed_tasks == ["task_a", "task_b"]
+        # build_replan must have been called
+        mock_replan.assert_called_once()
+        # Total results must contain both task results
+        assert len(results) == 2
+        assert results[0].task_name == "task_a"
+        assert not results[0].success
+        assert results[1].task_name == "task_b"
+        assert results[1].success
+

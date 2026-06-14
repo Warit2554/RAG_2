@@ -112,6 +112,8 @@ class PlanTask(BaseModel):
     priority: int = 0
     depends_on: list[str] = Field(default_factory=list, description="names of tasks this one depends on")
     can_parallel: bool = True    # hint: safe to run concurrently with other tasks
+    artifact_targets: list[str] = Field(default_factory=list, description="specific file paths or endpoints expected to be created/changed")
+    verification_rules: list[str] = Field(default_factory=list, description="custom rules, exit codes, or checks to execute for validation")
 
 
 class ExecutionPlan(BaseModel):
@@ -119,6 +121,7 @@ class ExecutionPlan(BaseModel):
     tasks: list[PlanTask]
     response_style: str = "concise"
     success_criteria: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list, description="constraints and limitations extracted from user input")
     confidence: float = 0.8      # planner's self-assessed confidence
 
 

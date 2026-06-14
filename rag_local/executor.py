@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -215,6 +216,50 @@ class VerificationAgent:
 
         summary = result.summary or ""
 
+        # ── Custom Verification Rules ──────────────────────────────────────────
+        if getattr(task, "verification_rules", None):
+            for rule in task.verification_rules:
+                rule_str = rule.strip()
+                if not rule_str:
+                    continue
+                if rule_str == "file_exists":
+                    import os
+                    targets = getattr(task, "artifact_targets", [])
+                    if not targets:
+                        if tool_name in {"write_file", "create_file"} and arguments:
+                            targets = [arguments.get("path", "")]
+                    for target in targets:
+                        if not target:
+                            continue
+                        from .config import WORKSPACE_DIR
+                        abs_path = target if os.path.isabs(target) else str(WORKSPACE_DIR / target)
+                        if not os.path.exists(abs_path):
+                            return False, f"Verification failed: expected artifact '{target}' to exist."
+                        if os.path.getsize(abs_path) == 0:
+                            return False, f"Verification failed: expected artifact '{target}' to be non-empty."
+                elif rule_str == "exit_code_0":
+                    if "exit code: 0" not in summary.lower() and "exit code:" in summary.lower():
+                        import re
+                        m = re.search(r"[Ee]xit [Cc]ode:\s*(\d+)", summary)
+                        if m and m.group(1) != "0":
+                            return False, f"Verification failed: tool command returned non-zero exit code {m.group(1)}."
+                elif rule_str.startswith("output_contains:"):
+                    expected = rule_str[len("output_contains:"):].strip().strip("'\"")
+                    if expected not in summary:
+                        return False, f"Verification failed: expected output to contain '{expected}'."
+                elif rule_str.startswith("service_listening:"):
+                    port_s = rule_str[len("service_listening:"):].strip()
+                    if port_s.isdigit():
+                        port = int(port_s)
+                        import socket
+                        try:
+                            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                                s.settimeout(1.5)
+                                s.connect(("127.0.0.1", port))
+                        except Exception as e:
+                            return False, f"Verification failed: port {port} is not listening ({e})."
+
+        # ── Default Verification Fallbacks ──────────────────────────────────────
         # Hard failure signals
         if any(
             phrase in summary
@@ -470,53 +515,101 @@ async def run_tasks(
     state: RagState,
     metrics: ExecutionMetrics | None = None,
 ) -> list[WorkerResult]:
-    """Execute plan tasks with dependency-aware parallelism and self-healing.
-
-    Independent tasks (same dependency layer) are run concurrently up to
-    ``SETTINGS.executor_parallel_limit``.
-    """
+    """Execute plan tasks with dependency-aware parallelism, self-healing, and dynamic replanning."""
     from .memory import get_lessons_memory
+    from .orchestrator import build_replan
+    from .mcp_client import mcp_manager
 
     if metrics is None:
         metrics = state.metrics
 
-    ordered = sorted(plan.tasks, key=lambda t: t.priority)
-    layers = _build_dependency_layers(ordered)
     all_results: list[WorkerResult] = []
     lessons = get_lessons_memory()
     sem = asyncio.Semaphore(SETTINGS.executor_parallel_limit)
+    replan_attempts = 0
+    max_replan_attempts = 2
 
-    for layer_idx, layer in enumerate(layers):
-        logger.debug(
-            "[Executor] Layer %d: %d tasks (%s)",
-            layer_idx,
-            len(layer),
-            [t.name for t in layer],
-        )
+    # We start with the original plan tasks
+    remaining_tasks = list(plan.tasks)
 
-        async def _run_one(task: PlanTask) -> WorkerResult:
-            async with sem:
-                return await execute_single_task(task, state, metrics)
+    while remaining_tasks:
+        ordered = sorted(remaining_tasks, key=lambda t: t.priority)
+        layers = _build_dependency_layers(ordered)
+        
+        aborted_by_failure = False
+        failed_task_name = ""
+        failed_task_error = ""
 
-        layer_results = await asyncio.gather(*[_run_one(t) for t in layer])
-
-        for task, res in zip(layer, layer_results):
-            all_results.append(res)
-            # Record in LessonsMemory
-            error_hint = "" if res.success else (res.summary or "")[:300]
-            lessons.record_outcome(
-                query=state.user_input,
-                plan_tasks=[task],
-                success=res.success,
-                error_summary=error_hint,
+        for layer_idx, layer in enumerate(layers):
+            logger.debug(
+                "[Executor] Executing layer %d: %d tasks (%s)",
+                layer_idx,
+                len(layer),
+                [t.name for t in layer],
             )
 
-        # Abort if a non-healable failure occurred in this layer
-        if any(not r.success and not r.healed for r in layer_results):
-            logger.warning(
-                "[Executor] Aborting pipeline after failure in layer %d.", layer_idx
-            )
+            async def _run_one(task: PlanTask) -> WorkerResult:
+                async with sem:
+                    return await execute_single_task(task, state, metrics)
+
+            layer_results = await asyncio.gather(*[_run_one(t) for t in layer])
+
+            for task, res in zip(layer, layer_results):
+                all_results.append(res)
+                # Keep state results up-to-date for the replanner
+                if task.kind in {"code", "git", "download", "mcp", "write"}:
+                    state.code_results.append(res)
+                else:
+                    state.web_results.append(res)
+                
+                # Record in LessonsMemory
+                error_hint = "" if res.success else (res.summary or "")[:300]
+                lessons.record_outcome(
+                    query=state.user_input,
+                    plan_tasks=[task],
+                    success=res.success,
+                    error_summary=error_hint,
+                )
+
+            # Check if any task in this layer failed and could not be self-healed
+            failed_run = next((r for r in layer_results if not r.success and not r.healed), None)
+            if failed_run:
+                aborted_by_failure = True
+                failed_task_name = failed_run.task_name
+                failed_task_error = failed_run.summary or "Task execution failed."
+                logger.warning(
+                    "[Executor] Non-healable failure in task '%s' of layer %d.",
+                    failed_task_name, layer_idx
+                )
+                break
+
+        if not aborted_by_failure:
+            # All layers executed successfully!
             break
+            
+        # If we failed, check if we can trigger the Replanner
+        if replan_attempts < max_replan_attempts:
+            replan_attempts += 1
+            logger.info(
+                "[Replanner] Triggering dynamic replanning (attempt %d/%d) after failure in '%s'...",
+                replan_attempts, max_replan_attempts, failed_task_name
+            )
+            # Call build_replan to create a new plan
+            new_plan = await build_replan(state, failed_task_name, failed_task_error, mcp_manager)
+            if new_plan and new_plan.tasks:
+                logger.info(
+                    "[Replanner] Successfully generated alternative plan with %d tasks: %s",
+                    len(new_plan.tasks), [t.name for t in new_plan.tasks]
+                )
+                # Update the remaining tasks to run with the replanned tasks
+                remaining_tasks = list(new_plan.tasks)
+                # Update plan in state
+                state.plan = new_plan
+                continue
+                
+        # If replanning failed or we ran out of attempts, abort pipeline
+        logger.warning("[Executor] Aborting execution pipeline.")
+        break
 
     return all_results
 
