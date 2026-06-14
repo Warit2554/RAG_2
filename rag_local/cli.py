@@ -301,18 +301,44 @@ def clear_suggestions(prev_lines_drawn: int, prompt_visible_len: int, cursor_pos
         sys.stdout.flush()
 
 
-def draw_suggestions(matches: list[tuple[str, str]], selected_idx: int, theme: Theme, prompt_visible_len: int, cursor_pos: int) -> int:
+def draw_suggestions(matches: list[tuple[str, str]], selected_idx: int, theme: Theme, prompt_visible_len: int, cursor_pos: int, view_offset: int = 0) -> int:
     """Draw the autocompletion dropdown menu below the cursor using relative positioning."""
     if not matches:
         return 0
     lines_drawn = 0
-    for idx, (cmd, desc) in enumerate(matches[:5]):
+    viewport_size = 5
+    
+    # Slice matches to viewport
+    visible_matches = matches[view_offset : view_offset + viewport_size]
+    n_matches = len(matches)
+    
+    # Calculate scrollbar details if total matches exceed viewport_size
+    has_scrollbar = n_matches > viewport_size
+    if has_scrollbar:
+        thumb_size = max(1, round(viewport_size * viewport_size / n_matches))
+        range_offset = n_matches - viewport_size
+        range_thumb = viewport_size - thumb_size
+        thumb_start = round((view_offset / range_offset) * range_thumb) if range_offset > 0 else 0
+
+    for idx, (cmd, desc) in enumerate(visible_matches):
+        global_idx = view_offset + idx
         sys.stdout.write("\n\r")
         lines_drawn += 1
-        if idx == selected_idx:
-            sys.stdout.write(f"  {theme.accent}▶ {cmd:<15} — {desc:<40}\033[0m\033[K")
+        
+        if global_idx == selected_idx:
+            item_str = f"  {theme.accent}▶ {cmd:<15} — {desc:<40}\033[0m"
         else:
-            sys.stdout.write(f"  \033[90m  {cmd:<15} — {desc:<40}\033[0m\033[K")
+            item_str = f"  \033[90m  {cmd:<15} — {desc:<40}\033[0m"
+            
+        if has_scrollbar:
+            if thumb_start <= idx < thumb_start + thumb_size:
+                scrollbar_char = f"{theme.secondary}┃\033[0m"
+            else:
+                scrollbar_char = "\033[90m│\033[0m"
+            sys.stdout.write(f"{item_str}  {scrollbar_char}\033[K")
+        else:
+            sys.stdout.write(f"{item_str}\033[K")
+            
     sys.stdout.write(f"\033[{lines_drawn}A")
     col = prompt_visible_len + cursor_pos
     sys.stdout.write("\r")
@@ -581,6 +607,7 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
     cursor_pos = 0
     prev_lines_drawn = 0
     selected_idx = 0
+    view_offset = 0
     history_idx = len(history) if history else 0
     prompt_len = visible_len(prompt)
     is_history_browsing = False
@@ -624,6 +651,8 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
                     
                 clean_segments(segments)
                 is_history_browsing = False
+                selected_idx = 0
+                view_offset = 0
                 
                 display_str, actual_str, mapping = segments_to_strings(segments, theme)
                 sys.stdout.write("\r" + prompt + display_str + "\033[K")
@@ -661,6 +690,8 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
                 is_history_browsing = False
                 cursor_pos = handle_backspace(segments, cursor_pos, mapping)
                 clean_segments(segments)
+                selected_idx = 0
+                view_offset = 0
                 
                 display_str, actual_str, mapping = segments_to_strings(segments, theme)
                 sys.stdout.write("\r" + prompt + display_str + "\033[K")
@@ -681,7 +712,12 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
             elif key == "\x1b[A":
                 matches = [s for s in SUGGESTIONS if s[0].startswith(actual_str)] if actual_str.startswith("/") else []
                 if matches and not is_history_browsing:
-                    selected_idx = (selected_idx - 1) % min(len(matches), 5)
+                    selected_idx = (selected_idx - 1) % len(matches)
+                    viewport_size = 5
+                    if selected_idx == len(matches) - 1:
+                        view_offset = max(0, len(matches) - viewport_size)
+                    elif selected_idx < view_offset:
+                        view_offset = selected_idx
                 else:
                     is_history_browsing = True
                     if history and history_idx > 0:
@@ -694,7 +730,12 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
             elif key == "\x1b[B":
                 matches = [s for s in SUGGESTIONS if s[0].startswith(actual_str)] if actual_str.startswith("/") else []
                 if matches and not is_history_browsing:
-                    selected_idx = (selected_idx + 1) % min(len(matches), 5)
+                    selected_idx = (selected_idx + 1) % len(matches)
+                    viewport_size = 5
+                    if selected_idx == 0:
+                        view_offset = 0
+                    elif selected_idx >= view_offset + viewport_size:
+                        view_offset = selected_idx - viewport_size + 1
                 else:
                     is_history_browsing = True
                     if history and history_idx < len(history) - 1:
@@ -723,12 +764,13 @@ def get_user_input(prompt: str, theme: Theme, history: list[str] = None) -> str:
                     sys.stdout.write(f"\033[{left_move}D")
                 sys.stdout.flush()
                 selected_idx = 0
-
-            # Draw suggestions
+                view_offset = 0
+ 
+             # Draw suggestions
             if actual_str.startswith("/") and not is_history_browsing:
                 matches = [s for s in SUGGESTIONS if s[0].startswith(actual_str)]
                 if matches:
-                    prev_lines_drawn = draw_suggestions(matches, selected_idx, theme, prompt_len, cursor_pos)
+                    prev_lines_drawn = draw_suggestions(matches, selected_idx, theme, prompt_len, cursor_pos, view_offset)
                     
     finally:
         sys.stdout.write("\033[?2004l") # Disable bracketed paste
