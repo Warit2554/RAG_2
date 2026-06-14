@@ -1112,26 +1112,31 @@ class CliRepl:
                             if "plan" in update:
                                 data = update["plan"]
                                 plan = data.get("plan")
-                                if plan and plan.tasks:
-                                    for t in plan.tasks:
-                                        # Pretty-print: "server/tool: brief args" instead of raw JSON
-                                        try:
-                                            import json as _j
-                                            q = _j.loads(t.query) if isinstance(t.query, str) else t.query
-                                            srv  = q.get("server_name", t.kind)
-                                            tool = q.get("tool_name", "")
-                                            args = q.get("arguments", {})
-                                            arg_parts = []
-                                            for k, v in (args or {}).items():
-                                                v_str = str(v)
-                                                if len(v_str) > 70:
-                                                    v_str = v_str[:67] + "..."
-                                                arg_parts.append(v_str)
-                                            arg_summary = ", ".join(arg_parts)
-                                            label = f"{srv}/{tool}: {arg_summary}" if arg_summary else f"{srv}/{tool}"
-                                        except Exception:
-                                            label = f"{t.kind}: {str(t.query)[:80]}"
-                                        print(f"{theme.secondary}[Tool]\033[0m {label}")
+                                if plan:
+                                    if getattr(plan, "success_criteria", None):
+                                        print(f"{theme.secondary}[Success Criteria]\033[0m")
+                                        for sc in plan.success_criteria:
+                                            print(f"  ☐ {sc}")
+                                    if plan.tasks:
+                                        for t in plan.tasks:
+                                            # Pretty-print: "server/tool: brief args" instead of raw JSON
+                                            try:
+                                                import json as _j
+                                                q = _j.loads(t.query) if isinstance(t.query, str) else t.query
+                                                srv  = q.get("server_name", t.kind)
+                                                tool = q.get("tool_name", "")
+                                                args = q.get("arguments", {})
+                                                arg_parts = []
+                                                for k, v in (args or {}).items():
+                                                    v_str = str(v)
+                                                    if len(v_str) > 70:
+                                                        v_str = v_str[:67] + "..."
+                                                    arg_parts.append(v_str)
+                                                arg_summary = ", ".join(arg_parts)
+                                                label = f"{srv}/{tool}: {arg_summary}" if arg_summary else f"{srv}/{tool}"
+                                            except Exception:
+                                                label = f"{t.kind}: {str(t.query)[:80]}"
+                                            print(f"{theme.secondary}[Tool]\033[0m {label}")
                             elif "retrieve" in update:
                                 print(f"{theme.secondary}[Tool]\033[0m retrieve: Searching indexed workspace files")
                             elif "synthesize" in update:
@@ -1147,10 +1152,47 @@ class CliRepl:
                                         code_results = synth_data.get("code_results") or []
                                         web_results  = synth_data.get("web_results") or []
                                         all_tool_res = code_results + web_results
-                                        if all_tool_res and not any(
-                                            getattr(r, "success", True) for r in all_tool_res
-                                        ):
-                                            task_success = False
+                                        
+                                        # Force-Do should retry execution failures.
+                                        # Force-Do should not retry explanation generation (i.e. no tools were run).
+                                        if all_tool_res:
+                                            # Check if any task failed
+                                            if not all(getattr(r, "success", True) for r in all_tool_res):
+                                                task_success = False
+                                            
+                                            # Artifacts existence check: Task only succeeds when requested artifacts exist.
+                                            import re as _re
+                                            from pathlib import Path
+                                            from rag_local.config import WORKSPACE_DIR
+                                            
+                                            lower_query = query.lower()
+                                            files_mentioned = _re.findall(r'\b([\w\-]+\.(?:jar|txt|json|sh|py|properties|yml|yaml|xml|conf|cfg))\b', lower_query)
+                                            for filename in files_mentioned:
+                                                found = False
+                                                if (WORKSPACE_DIR / filename).exists() and (WORKSPACE_DIR / filename).is_file():
+                                                    found = True
+                                                else:
+                                                    for p in WORKSPACE_DIR.glob(f"**/{filename}"):
+                                                        if p.is_file():
+                                                            found = True
+                                                            break
+                                                if not found:
+                                                    task_success = False
+                                                    print(f"{theme.secondary}[Verification]\033[0m Required artifact '{filename}' was not created/found in workspace.")
+                                            
+                                            # If Minecraft/Fabric server is requested, we also verify standard server files
+                                            if "minecraft" in lower_query or "fabric" in lower_query:
+                                                eula_exists = False
+                                                jar_exists = False
+                                                for p in WORKSPACE_DIR.glob("**/eula.txt"):
+                                                    eula_exists = True
+                                                    break
+                                                for p in WORKSPACE_DIR.glob("**/*.jar"):
+                                                    jar_exists = True
+                                                    break
+                                                if not eula_exists or not jar_exists:
+                                                    task_success = False
+                                                    print(f"{theme.secondary}[Verification]\033[0m Minecraft/Fabric server files (eula.txt/jar) are missing.")
 
                             for node_name, node_state in update.items():
                                 final_state.update(node_state)

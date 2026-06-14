@@ -1,0 +1,741 @@
+[
+  {
+    "name": "create_entities",
+    "description": "Create multiple new entities in the knowledge graph",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "entities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "The name of the entity"
+              },
+              "entityType": {
+                "type": "string",
+                "description": "The type of the entity"
+              },
+              "observations": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "An array of observation contents associated with the entity"
+              }
+            },
+            "required": [
+              "name",
+              "entityType",
+              "observations"
+            ]
+          }
+        }
+      },
+      "required": [
+        "entities"
+      ]
+    },
+    "server_name": "memory"
+  },
+  {
+    "name": "create_relations",
+    "description": "Create multiple new relations between entities in the knowledge graph. Relations should be in active voice",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "The name of the entity where the relation starts"
+              },
+              "to": {
+                "type": "string",
+                "description": "The name of the entity where the relation ends"
+              },
+              "relationType": {
+                "type": "string",
+                "description": "The type of the relation"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "relationType"
+            ]
+          }
+        }
+      },
+      "required": [
+        "relations"
+      ]
+    },
+    "server_name": "memory"
+  },
+  {
+    "name": "add_observations",
+    "description": "Add new observations to existing entities in the knowledge graph",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "entityName": {
+                "type": "string",
+                "description": "The name of the entity to add the observations to"
+              },
+              "contents": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "An array of observation contents to add"
+              }
+            },
+            "required": [
+              "entityName",
+              "contents"
+            ]
+          }
+        }
+      },
+      "required": [
+        "observations"
+      ]
+    },
+    "server_name": "memory"
+  },
+  {
+    "name": "delete_entities",
+    "description": "Delete multiple entities and their associated relations from the knowledge graph",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "entityNames": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "An array of entity names to delete"
+        }
+      },
+      "required": [
+        "entityNames"
+      ]
+    },
+    "server_name": "memory"
+  },
+  {
+    "name": "delete_observations",
+    "description": "Delete specific observations from entities in the knowledge graph",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "deletions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "entityName": {
+                "type": "string",
+                "description": "The name of the entity containing the observations"
+              },
+              "observations": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "An array of observations to delete"
+              }
+            },
+            "required": [
+              "entityName",
+              "observations"
+            ]
+          }
+        }
+      },
+      "required": [
+        "deletions"
+      ]
+    },
+    "server_name": "memory"
+  },
+  {
+    "name": "delete_relations",
+    "description": "Delete multiple relations from the knowledge graph",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "relations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "from": {
+                "type": "string",
+                "description": "The name of the entity where the relation starts"
+              },
+              "to": {
+                "type": "string",
+                "description": "The name of the entity where the relation ends"
+              },
+              "relationType": {
+                "type": "string",
+                "description": "The type of the relation"
+              }
+            },
+            "required": [
+              "from",
+              "to",
+              "relationType"
+            ]
+          },
+          "description": "An array of relations to delete"
+        }
+      },
+      "required": [
+        "relations"
+      ]
+    },
+    "server_name": "memory"
+  },
+  {
+    "name": "read_graph",
+    "description": "Read the entire knowledge graph",
+    "input_schema": {
+      "type": "object",
+      "properties": {}
+    },
+    "server_name": "memory"
+  },
+  {
+    "name": "search_nodes",
+    "description": "Search for nodes in the knowledge graph based on a query",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "The search query to match against entity names, types, and observation content"
+        }
+      },
+      "required": [
+        "query"
+      ]
+    },
+    "server_name": "memory"
+  },
+  {
+    "name": "open_nodes",
+    "description": "Open specific nodes in the knowledge graph by their names",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "names": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "An array of entity names to retrieve"
+        }
+      },
+      "required": [
+        "names"
+      ]
+    },
+    "server_name": "memory"
+  },
+  {
+    "name": "remote-ssh",
+    "description": "Execute SSH commands on remote servers with private key authentication",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Remote server hostname or IP address"
+        },
+        "user": {
+          "type": "string",
+          "description": "SSH username"
+        },
+        "command": {
+          "type": "string",
+          "description": "Command to execute on remote server"
+        },
+        "privateKeyPath": {
+          "type": "string",
+          "description": "Path to SSH private key (optional, falls back to SSH_PRIVATE_KEY env var)",
+          "optional": true
+        },
+        "port": {
+          "type": "number",
+          "description": "SSH port (default: 22)",
+          "optional": true,
+          "default": 22
+        }
+      },
+      "required": [
+        "host",
+        "user",
+        "command"
+      ]
+    },
+    "server_name": "ssh"
+  },
+  {
+    "name": "ssh-edit-block",
+    "description": "Edit specific text blocks in remote files (token-efficient alternative to full rewrites)",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Remote server hostname or IP address"
+        },
+        "user": {
+          "type": "string",
+          "description": "SSH username"
+        },
+        "filePath": {
+          "type": "string",
+          "description": "Path to file on remote server"
+        },
+        "oldText": {
+          "type": "string",
+          "description": "Text to find and replace"
+        },
+        "newText": {
+          "type": "string",
+          "description": "Replacement text"
+        },
+        "expectedReplacements": {
+          "type": "number",
+          "description": "Expected number of replacements (default: 1)",
+          "optional": true,
+          "default": 1
+        },
+        "privateKeyPath": {
+          "type": "string",
+          "description": "Path to SSH private key (optional)",
+          "optional": true
+        },
+        "port": {
+          "type": "number",
+          "description": "SSH port (default: 22)",
+          "optional": true,
+          "default": 22
+        }
+      },
+      "required": [
+        "host",
+        "user",
+        "filePath",
+        "oldText",
+        "newText"
+      ]
+    },
+    "server_name": "ssh"
+  },
+  {
+    "name": "ssh-read-lines",
+    "description": "Read specific lines from remote files (token-efficient for large files)",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Remote server hostname or IP address"
+        },
+        "user": {
+          "type": "string",
+          "description": "SSH username"
+        },
+        "filePath": {
+          "type": "string",
+          "description": "Path to file on remote server"
+        },
+        "startLine": {
+          "type": "number",
+          "description": "Starting line number (1-based)",
+          "optional": true,
+          "default": 1
+        },
+        "endLine": {
+          "type": "number",
+          "description": "Ending line number (optional, reads to end if not specified)",
+          "optional": true
+        },
+        "maxLines": {
+          "type": "number",
+          "description": "Maximum lines to read (default: 100)",
+          "optional": true,
+          "default": 100
+        },
+        "privateKeyPath": {
+          "type": "string",
+          "description": "Path to SSH private key (optional)",
+          "optional": true
+        },
+        "port": {
+          "type": "number",
+          "description": "SSH port (default: 22)",
+          "optional": true,
+          "default": 22
+        }
+      },
+      "required": [
+        "host",
+        "user",
+        "filePath"
+      ]
+    },
+    "server_name": "ssh"
+  },
+  {
+    "name": "ssh-search-code",
+    "description": "Search for patterns in remote files without reading full content (token-efficient)",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Remote server hostname or IP address"
+        },
+        "user": {
+          "type": "string",
+          "description": "SSH username"
+        },
+        "path": {
+          "type": "string",
+          "description": "Directory path to search on remote server"
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Text pattern to search for"
+        },
+        "filePattern": {
+          "type": "string",
+          "description": "File pattern (e.g., \"*.js\", \"*.py\")",
+          "optional": true
+        },
+        "ignoreCase": {
+          "type": "boolean",
+          "description": "Case-insensitive search",
+          "optional": true,
+          "default": false
+        },
+        "maxResults": {
+          "type": "number",
+          "description": "Maximum number of results",
+          "optional": true,
+          "default": 50
+        },
+        "contextLines": {
+          "type": "number",
+          "description": "Lines of context around matches",
+          "optional": true,
+          "default": 2
+        },
+        "privateKeyPath": {
+          "type": "string",
+          "description": "Path to SSH private key (optional)",
+          "optional": true
+        },
+        "port": {
+          "type": "number",
+          "description": "SSH port (default: 22)",
+          "optional": true,
+          "default": 22
+        }
+      },
+      "required": [
+        "host",
+        "user",
+        "path",
+        "pattern"
+      ]
+    },
+    "server_name": "ssh"
+  },
+  {
+    "name": "ssh-write-chunk",
+    "description": "Write content to remote files with append/rewrite modes (token-efficient for large content)",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Remote server hostname or IP address"
+        },
+        "user": {
+          "type": "string",
+          "description": "SSH username"
+        },
+        "filePath": {
+          "type": "string",
+          "description": "Path to file on remote server"
+        },
+        "content": {
+          "type": "string",
+          "description": "Content to write"
+        },
+        "mode": {
+          "type": "string",
+          "description": "Write mode: \"rewrite\" or \"append\"",
+          "enum": [
+            "rewrite",
+            "append"
+          ],
+          "default": "rewrite"
+        },
+        "privateKeyPath": {
+          "type": "string",
+          "description": "Path to SSH private key (optional)",
+          "optional": true
+        },
+        "port": {
+          "type": "number",
+          "description": "SSH port (default: 22)",
+          "optional": true,
+          "default": 22
+        }
+      },
+      "required": [
+        "host",
+        "user",
+        "filePath",
+        "content"
+      ]
+    },
+    "server_name": "ssh"
+  },
+  {
+    "name": "sequentialthinking",
+    "description": "A detailed tool for dynamic and reflective problem-solving through thoughts.\nThis tool helps analyze problems through a flexible thinking process that can adapt and evolve.\nEach thought can build on, question, or revise previous insights as understanding deepens.\n\nWhen to use this tool:\n- Breaking down complex problems into steps\n- Planning and design with room for revision\n- Analysis that might need course correction\n- Problems where the full scope might not be clear initially\n- Problems that require a multi-step solution\n- Tasks that need to maintain context over multiple steps\n- Situations where irrelevant information needs to be filtered out\n\nKey features:\n- You can adjust total_thoughts up or down as you progress\n- You can question or revise previous thoughts\n- You can add more thoughts even after reaching what seemed like the end\n- You can express uncertainty and explore alternative approaches\n- Not every thought needs to build linearly - you can branch or backtrack\n- Generates a solution hypothesis\n- Verifies the hypothesis based on the Chain of Thought steps\n- Repeats the process until satisfied\n- Provides a correct answer\n\nParameters explained:\n- thought: Your current thinking step, which can include:\n* Regular analytical steps\n* Revisions of previous thoughts\n* Questions about previous decisions\n* Realizations about needing more analysis\n* Changes in approach\n* Hypothesis generation\n* Hypothesis verification\n- next_thought_needed: True if you need more thinking, even if at what seemed like the end\n- thought_number: Current number in sequence (can go beyond initial total if needed)\n- total_thoughts: Current estimate of thoughts needed (can be adjusted up/down)\n- is_revision: A boolean indicating if this thought revises previous thinking\n- revises_thought: If is_revision is true, which thought number is being reconsidered\n- branch_from_thought: If branching, which thought number is the branching point\n- branch_id: Identifier for the current branch (if any)\n- needs_more_thoughts: If reaching end but realizing more thoughts needed\n\nYou should:\n1. Start with an initial estimate of needed thoughts, but be ready to adjust\n2. Feel free to question or revise previous thoughts\n3. Don't hesitate to add more thoughts if needed, even at the \"end\"\n4. Express uncertainty when present\n5. Mark thoughts that revise previous thinking or branch into new paths\n6. Ignore information that is irrelevant to the current step\n7. Generate a solution hypothesis when appropriate\n8. Verify the hypothesis based on the Chain of Thought steps\n9. Repeat the process until satisfied with the solution\n10. Provide a single, ideally correct answer as the final output\n11. Only set next_thought_needed to false when truly done and a satisfactory answer is reached",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "thought": {
+          "type": "string",
+          "description": "Your current thinking step"
+        },
+        "nextThoughtNeeded": {
+          "type": "boolean",
+          "description": "Whether another thought step is needed"
+        },
+        "thoughtNumber": {
+          "type": "integer",
+          "description": "Current thought number",
+          "minimum": 1
+        },
+        "totalThoughts": {
+          "type": "integer",
+          "description": "Estimated total thoughts needed",
+          "minimum": 1
+        },
+        "isRevision": {
+          "type": "boolean",
+          "description": "Whether this revises previous thinking"
+        },
+        "revisesThought": {
+          "type": "integer",
+          "description": "Which thought is being reconsidered",
+          "minimum": 1
+        },
+        "branchFromThought": {
+          "type": "integer",
+          "description": "Branching point thought number",
+          "minimum": 1
+        },
+        "branchId": {
+          "type": "string",
+          "description": "Branch identifier"
+        },
+        "needsMoreThoughts": {
+          "type": "boolean",
+          "description": "If more thoughts are needed"
+        }
+      },
+      "required": [
+        "thought",
+        "nextThoughtNeeded",
+        "thoughtNumber",
+        "totalThoughts"
+      ]
+    },
+    "server_name": "sequential-thinking"
+  },
+  {
+    "name": "get_system_status",
+    "description": "Check the local host system status including CPU load, RAM usage, Disk space, and Docker health.",
+    "input_schema": {
+      "properties": {},
+      "title": "get_system_statusArguments",
+      "type": "object"
+    },
+    "server_name": "operations"
+  },
+  {
+    "name": "run_security_audit",
+    "description": "Scan the workspace directory for potential security issues, hardcoded secrets, and unsafe file permissions.",
+    "input_schema": {
+      "properties": {
+        "directory_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Directory Path"
+        }
+      },
+      "title": "run_security_auditArguments",
+      "type": "object"
+    },
+    "server_name": "operations"
+  },
+  {
+    "name": "generate_project_boilerplate",
+    "description": "Create a structured folder template with files, Dockerfile, tests, and standard config for FastAPI, CLI, Node, or Next.js.",
+    "input_schema": {
+      "properties": {
+        "project_name": {
+          "title": "Project Name",
+          "type": "string"
+        },
+        "project_type": {
+          "title": "Project Type",
+          "type": "string"
+        },
+        "target_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Dir"
+        }
+      },
+      "required": [
+        "project_name",
+        "project_type"
+      ],
+      "title": "generate_project_boilerplateArguments",
+      "type": "object"
+    },
+    "server_name": "operations"
+  },
+  {
+    "name": "execute_operational_command",
+    "description": "Run a CLI command on the host (e.g. status, docker-compose, pytest, service status, network checks).",
+    "input_schema": {
+      "properties": {
+        "command": {
+          "title": "Command",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 30,
+          "title": "Timeout Seconds",
+          "type": "integer"
+        },
+        "directory": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Directory"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "title": "execute_operational_commandArguments",
+      "type": "object"
+    },
+    "server_name": "operations"
+  },
+  {
+    "name": "check_code_syntax",
+    "description": "Validate python file syntax using abstract syntax tree parsing to report line, column, and details of syntax errors.",
+    "input_schema": {
+      "properties": {
+        "file_path": {
+          "title": "File Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_path"
+      ],
+      "title": "check_code_syntaxArguments",
+      "type": "object"
+    },
+    "server_name": "operations"
+  },
+  {
+    "name": "check_network_status",
+    "description": "Check the host network settings, active interfaces, external connectivity, and listening ports.",
+    "input_schema": {
+      "properties": {},
+      "title": "check_network_statusArguments",
+      "type": "object"
+    },
+    "server_name": "operations"
+  },
+  {
+    "name": "get_system_logs",
+    "description": "Retrieve system log buffers for diagnostics (options: syslog, system.log, messages, journald).",
+    "input_schema": {
+      "properties": {
+        "log_name": {
+          "default": "syslog",
+          "title": "Log Name",
+          "type": "string"
+        },
+        "lines": {
+          "default": 50,
+          "title": "Lines",
+          "type": "integer"
+        }
+      },
+      "title": "get_system_logsArguments",
+      "type": "object"
+    },
+    "server_name": "operations"
+  },
+  {
+    "name": "get_running_services",
+    "description": "Retrieve lists of active/running background services on the host.",
+    "input_schema": {
+      "properties": {},
+      "title": "get_running_servicesArguments",
+      "type": "object"
+    },
+    "server_name": "operations"
+  }
+]

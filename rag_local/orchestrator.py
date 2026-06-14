@@ -29,7 +29,9 @@ _LOCAL_KIND_TO_MCP = {
 }
 
 ORCHESTRATOR_SYSTEM = """You are a local RAG orchestrator that uses MCP (Model Context Protocol) tools.
-Create a short JSON plan with keys: objective, tasks, response_style.
+Create a JSON plan with keys: objective, success_criteria, tasks, response_style.
+
+'success_criteria' is an array of strings representing verifiable success criteria for the request.
 Each task must have: name, kind, query, priority.
 
 The ONLY valid kinds are:
@@ -46,15 +48,41 @@ FILE DOWNLOAD STRATEGY (use this order):
 3. Verify the file was downloaded with: {"server_name": "filesystem", "tool_name": "get_file_info", "arguments": {"path": "filename.jar"}}
 NEVER rely only on fetch/scrape to download binary files. Always use wget/curl via execute_operational_command.
 
+ACTION DETECTION AND PRIORITIZATION RULES:
+- Detect action verbs in user query: create, install, download, setup, configure, deploy.
+- If the query contains action verbs, the planner MUST generate direct, executable tasks, NOT advice or information-gathering/tutorial tasks.
+- Prioritize using tools in this order:
+  1. filesystem (e.g. read_file, write_file, list_directory, get_file_info)
+  2. operations (with curl/wget to download)
+  3. operations / desktop-commander (to execute terminal commands)
+  4. docker (to manage containers)
+  5. ssh (to run remote commands)
+  6. duckduckgo / fetch (only if information is missing)
+- Web search must NOT be the first action for common tasks. Directly generate filesystem or terminal command tasks to execute the action.
+- Do NOT output tutorials, advice, or guides on how the user can do it themselves. Output the exact tasks to execute it right now.
+
 Example Output:
 {
-  "objective": "Understand the repository",
+  "objective": "Setup Minecraft Fabric Server",
+  "success_criteria": [
+    "fabric server jar downloaded",
+    "server directory created",
+    "eula.txt accepted",
+    "server started successfully",
+    "joinable on port 25565"
+  ],
   "tasks": [
     {
-      "name": "list_files",
+      "name": "create_server_dir",
       "kind": "mcp",
-      "query": {"server_name": "filesystem", "tool_name": "list_directory", "arguments": {"path": "."}},
+      "query": {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "mkdir -p minecraft_server"}},
       "priority": 1
+    },
+    {
+      "name": "download_installer",
+      "kind": "mcp",
+      "query": {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "curl -o minecraft_server/fabric-installer.jar https://meta.fabricmc.net/v2/versions/loader/1.21.1/0.16.0/1.0.1/server/jar", "timeout_seconds": 120}},
+      "priority": 2
     }
   ],
   "response_style": "detailed"
@@ -111,6 +139,9 @@ ALLOWED_MCP_TOOLS = {
     "duckduckgo": {"search"},
     "fetch": {"fetch"},
     "operations": {"execute_operational_command"},
+    "desktop-commander": None,
+    "docker": None,
+    "ssh": None,
 }
 
 
@@ -125,7 +156,7 @@ async def build_plan(state: RagState) -> ExecutionPlan:
         for t in all_tools:
             srv = t.get('server_name')
             name = t.get('name')
-            if srv in ALLOWED_MCP_TOOLS and name in ALLOWED_MCP_TOOLS[srv]:
+            if srv in ALLOWED_MCP_TOOLS and (ALLOWED_MCP_TOOLS[srv] is None or name in ALLOWED_MCP_TOOLS[srv]):
                 props = t.get('input_schema', {}).get('properties', {}) or {}
                 req = t.get('input_schema', {}).get('required', []) or []
                 args_hint = ", ".join(f"{k} (required)" if k in req else k for k in props.keys())
@@ -171,6 +202,7 @@ async def build_plan(state: RagState) -> ExecutionPlan:
             objective=str(parsed.get("objective", state.user_input)),
             tasks=tasks,
             response_style=str(parsed.get("response_style", "concise")),
+            success_criteria=parsed.get("success_criteria", []),
         )
     except Exception:
         lower = state.user_input.lower()
@@ -182,7 +214,107 @@ async def build_plan(state: RagState) -> ExecutionPlan:
         if any(word in lower for word in ["save", "download", "write"]):
             tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=0))
             tasks.append(PlanTask(name="image_download", kind="download", query=state.user_input, priority=1))
-        return ExecutionPlan(objective=state.user_input, tasks=tasks, response_style="concise")
+        return ExecutionPlan(objective=state.user_input, tasks=tasks, response_style="concise", success_criteria=[])
+
+
+async def verify_action(server_name: str, tool_name: str, arguments: dict[str, Any], result_str: str) -> tuple[bool, str]:
+    """
+    Verifies that the action had the desired effect:
+    - Files were created and are non-empty.
+    - Processes are running.
+    - Expected output / port is listening.
+    """
+    import os
+    import re
+    from pathlib import Path
+    from .mcp_client import mcp_manager
+    from .config import WORKSPACE_DIR
+    workspace_dir = str(WORKSPACE_DIR)
+
+    # 1. filesystem/write_file verification
+    if server_name == "filesystem" and tool_name == "write_file":
+        path = arguments.get("path", "")
+        if not path:
+            return False, "Verification failed: path argument missing."
+        if not os.path.isabs(path):
+            path = os.path.abspath(os.path.join(workspace_dir, path))
+        if not os.path.exists(path):
+            return False, f"Verification failed: expected file '{path}' to exist, but it was not found."
+        if os.path.getsize(path) == 0:
+            return False, f"Verification failed: expected file '{path}' to be non-empty, but it is 0 bytes."
+        return True, f"Verified: file '{path}' created successfully ({os.path.getsize(path)} bytes)."
+
+    # 2. operations/execute_operational_command verification
+    if server_name == "operations" and tool_name == "execute_operational_command":
+        command = arguments.get("command", "")
+        
+        # Download verification (curl/wget)
+        download_match = re.search(r'(?:wget\s+.*-O\s+|curl\s+.*-o\s+|>\s+)(\S+)', command)
+        if download_match:
+            filename = download_match.group(1).strip("'\"")
+            run_dir = arguments.get("directory") or workspace_dir
+            file_path = os.path.abspath(os.path.join(run_dir, filename))
+            if not os.path.exists(file_path):
+                file_path = os.path.abspath(os.path.join(workspace_dir, filename))
+            
+            if not os.path.exists(file_path):
+                return False, f"Verification failed: download target file '{filename}' was not created."
+            if os.stat(file_path).st_size == 0:
+                return False, f"Verification failed: download target file '{filename}' is empty."
+            return True, f"Verified: file '{filename}' downloaded successfully ({os.stat(file_path).st_size} bytes)."
+
+        # Directory creation verification
+        mkdir_match = re.search(r'mkdir\s+(?:-p\s+)?(\S+)', command)
+        if mkdir_match:
+            dirname = mkdir_match.group(1).strip("'\"")
+            run_dir = arguments.get("directory") or workspace_dir
+            dir_path = os.path.abspath(os.path.join(run_dir, dirname))
+            if not os.path.exists(dir_path):
+                dir_path = os.path.abspath(os.path.join(workspace_dir, dirname))
+            if not os.path.exists(dir_path) or not os.path.isdir(dir_path):
+                return False, f"Verification failed: directory '{dirname}' was not created."
+            return True, f"Verified: directory '{dirname}' created successfully."
+
+        # Server/process execution verification
+        if "jar" in command or "server" in command or "java" in command:
+            # Check EULA acceptance specifically if this command accepted it or set it up
+            if "eula" in command and ("echo" in command or "write" in command or "sed" in command):
+                eula_path = os.path.join(workspace_dir, "eula.txt")
+                if not os.path.exists(eula_path):
+                    for p in Path(workspace_dir).glob("**/eula.txt"):
+                        eula_path = str(p)
+                        break
+                if os.path.exists(eula_path):
+                    content = Path(eula_path).read_text(encoding="utf-8")
+                    if "eula=true" in content.lower().replace(" ", ""):
+                        return True, "Verified: eula.txt accepted."
+            
+            # Give a brief sleep for processes to start up
+            await asyncio.sleep(2)
+            
+            # Check process status on host via operations
+            ps_check = await mcp_manager.call_tool("operations", "execute_operational_command", {"command": "ps aux | grep java | grep -v grep"})
+            # Check if port 25565 is listening
+            lsof_check = await mcp_manager.call_tool("operations", "execute_operational_command", {"command": "lsof -i :25565"})
+            
+            if "LISTEN" in lsof_check:
+                return True, "Verified: Server started successfully and is listening on port 25565."
+            if "java" in ps_check:
+                return True, "Verified: Java process is running on host."
+                
+            eula_path = os.path.join(workspace_dir, "eula.txt")
+            if not os.path.exists(eula_path):
+                for p in Path(workspace_dir).glob("**/eula.txt"):
+                    eula_path = str(p)
+                    break
+            if os.path.exists(eula_path):
+                content = Path(eula_path).read_text(encoding="utf-8")
+                if "eula=true" not in content.lower().replace(" ", ""):
+                    return False, "Verification failed: Server failed to start because eula.txt has not been accepted."
+            
+            return False, f"Verification failed: java server process not detected on port 25565. Check output: {ps_check}"
+
+    return True, "Verification skipped or passed by default."
 
 
 async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerResult:
@@ -209,11 +341,9 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
     if task.kind == "mcp":
         from .mcp_client import mcp_manager
         try:
-            # Try to parse structured query first
             try:
                 params = _json.loads(task.query)
             except Exception:
-                # query is plain text → try to infer the best MCP tool
                 params = {"server_name": "duckduckgo", "tool_name": "search", "arguments": {"query": task.query}}
 
             server_name = params.get("server_name", "")
@@ -225,10 +355,16 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
                                     summary="MCP task missing server_name or tool_name.")
 
             result_str = await mcp_manager.call_tool(server_name, tool_name, arguments)
+            
+            # Run verification layer
+            verified, ver_msg = await verify_action(server_name, tool_name, arguments, result_str)
+            if not verified:
+                result_str = f"{result_str}\n\n[Verification Error] {ver_msg}"
+
             return WorkerResult(
                 task_name=task.name,
                 kind=task.kind,
-                success="Error" not in result_str,
+                success="Error" not in result_str and verified,
                 summary=result_str,
                 artifacts=[{"server_name": server_name, "tool_name": tool_name,
                             "arguments": arguments, "result": result_str}],
@@ -237,14 +373,11 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
             return WorkerResult(task_name=task.name, kind=task.kind, success=False, summary=str(exc))
 
     # ── legacy local kinds → redirect to MCP ─────────────────────────────────
-    # These should no longer appear (orchestrator prompt forbids them) but if they
-    # do (e.g. LLM hallucination) we gracefully forward to the closest MCP server.
     from .mcp_client import mcp_manager
     fallback = _LOCAL_KIND_TO_MCP.get(task.kind)
     if fallback and mcp_manager.sessions:
         server_name = fallback["server_name"]
         tool_name   = fallback["tool_name"]
-        # Build best-effort arguments
         if task.kind in {"web"}:
             arguments = {"query": task.query}
         elif task.kind == "scrape":
@@ -261,10 +394,16 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
             arguments = {"query": task.query}
 
         result_str = await mcp_manager.call_tool(server_name, tool_name, arguments)
+        
+        # Run verification layer
+        verified, ver_msg = await verify_action(server_name, tool_name, arguments, result_str)
+        if not verified:
+            result_str = f"{result_str}\n\n[Verification Error] {ver_msg}"
+
         return WorkerResult(
             task_name=task.name,
             kind="mcp",
-            success="Error" not in result_str,
+            success="Error" not in result_str and verified,
             summary=result_str,
             artifacts=[{"redirected_from": task.kind, "server_name": server_name,
                         "tool_name": tool_name, "result": result_str}],
@@ -274,16 +413,25 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
                         summary=f"Unknown task kind '{task.kind}'. Only 'mcp' and 'retrieve' are supported.")
 
 
-
 async def run_parallel_tasks(plan: ExecutionPlan, state: RagState) -> list[WorkerResult]:
-
+    # Run tasks sequentially in priority order; if any task fails, abort remaining steps
     ordered = sorted(plan.tasks, key=lambda item: item.priority)
-    return await asyncio.gather(*(execute_task(task, state) for task in ordered))
+    results = []
+    for task in ordered:
+        res = await execute_task(task, state)
+        results.append(res)
+        if not res.success:
+            break
+    return results
 
 
 SYNTHESIZER_SYSTEM = """You are the final synthesizer for a local RAG system.
 Use only the provided worker results and retrieved context.
 Answer clearly, call out uncertainty, and keep the response practical.
+
+BEHAVIOR RULES FOR ACTIONS:
+- If the user requested to "create", "download", "install", "setup", "configure", or "deploy", and the plan executed tool actions, DO NOT provide tutorials, instructions, or advice on how the user can do it manually. Instead, summarize what was executed, show the outputs, paths, logs, and report success/failure.
+- Only return tutorials if the user explicitly asked "how to do..." or requested instructions.
 
 FAILURE RECOVERY RULES:
 If a tool task failed or produced an error:

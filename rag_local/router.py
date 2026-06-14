@@ -50,6 +50,12 @@ async def route_query(query: str, history: list[dict[str, str]] | None = None) -
         elif route == "general" and any(ind in lower for ind in [".py", ".js", ".ts", ".json", ".md", "class ", "def ", "config.py", "rag_local"]):
             route = "code_analysis"
         
+        # Action verb override: do not allow general route for execution requests
+        action_verbs = ["create", "install", "download", "setup", "configure", "deploy"]
+        if any(verb in lower for verb in action_verbs):
+            if route == "general":
+                route = "rag"
+        
         decision = RouteDecision(
             route=route,
             confidence=float(parsed.get("confidence", 0.5)),

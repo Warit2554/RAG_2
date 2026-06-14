@@ -52,6 +52,7 @@ class ExecutionPlan(BaseModel):
     objective: str
     tasks: list[PlanTask]
     response_style: str = "concise"
+    success_criteria: list[str] = Field(default_factory=list)
 
 
 class WorkerResult(BaseModel):
