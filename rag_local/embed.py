@@ -81,7 +81,30 @@ class OllamaClient:
                         break
 
     async def embed(self, model: str, texts: list[str]) -> list[list[float]]:
+        """Embed a list of texts.
+
+        Attempts to use Ollama's batch ``/api/embed`` endpoint (≥ v0.1.32) to
+        send all texts in a single request.  Falls back to the legacy
+        ``/api/embeddings`` serial loop for older Ollama versions.
+        """
+        if not texts:
+            return []
         async with httpx.AsyncClient(timeout=self.timeout) as client:
+            # ── Try batch endpoint first ─────────────────────────────────────
+            try:
+                response = await client.post(
+                    self._url("/api/embed"),
+                    json={"model": model, "input": texts},
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    embeddings = data.get("embeddings") or data.get("embedding")
+                    if embeddings and len(embeddings) == len(texts):
+                        return [list(v) for v in embeddings]
+            except Exception:
+                pass  # fall through to serial loop
+
+            # ── Serial fallback for older Ollama builds ───────────────────────
             vectors: list[list[float]] = []
             for text in texts:
                 response = await client.post(

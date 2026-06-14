@@ -51,8 +51,14 @@ async def route_query(query: str, history: list[dict[str, str]] | None = None) -
             route = "code_analysis"
         
         # Action verb override: do not allow general route for execution requests
-        action_verbs = ["create", "install", "download", "setup", "configure", "deploy"]
-        if any(verb in lower for verb in action_verbs):
+        # download/install/deploy → web_search (need external URLs/packages)
+        # create/configure/setup → rag if already routing to general (local file intent)
+        web_action_verbs = ["download", "install", "deploy"]
+        local_action_verbs = ["create", "configure", "setup"]
+        if any(verb in lower for verb in web_action_verbs):
+            if route in {"general", "rag"}:
+                route = "web_search"
+        elif any(verb in lower for verb in local_action_verbs):
             if route == "general":
                 route = "rag"
         
@@ -65,11 +71,18 @@ async def route_query(query: str, history: list[dict[str, str]] | None = None) -
     except Exception as exc:
         lower = query.lower()
         has_local_ref = any(word in lower for word in ["repo", "code", "bug", "function", "class", "stack trace", "traceback", "markdown", "rag", "retrieve"])
-        if any(word in lower for word in ["save", "download", "write"]):
+        if any(word in lower for word in ["download", "install", "deploy"]):
             if not has_local_ref:
                 route = "web_search"
             else:
                 route = "code_analysis" if any(word in lower for word in ["code", "bug", "function", "class", "repo"]) else "rag"
+        elif any(word in lower for word in ["save", "write"]):
+            if not has_local_ref:
+                route = "web_search"
+            else:
+                route = "code_analysis" if any(word in lower for word in ["code", "bug", "function", "class", "repo"]) else "rag"
+        elif any(word in lower for word in ["create", "setup", "configure"]):
+            route = "code_analysis" if any(word in lower for word in ["code", "bug", "function", "class", "repo"]) else "rag"
         elif any(word in lower for word in ["file", "repo", "code", "bug", "function", "class", "stack trace", "traceback"]):
             route = "code_analysis"
         elif any(word in lower for word in ["news", "today", "latest", "current", "web", "internet"]):

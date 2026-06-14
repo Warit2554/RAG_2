@@ -30,3 +30,6 @@ rag_local/tools/image_downloader/tool.py
 rag_local/tools/retrieval/tool.py
 rag_local/tools/web_scraper/tool.py
 rag_local/tools/web_search/tool.py
+tests/test_embed.py
+tests/test_orchestrator.py
+tests/test_router.py

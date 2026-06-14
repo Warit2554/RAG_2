@@ -172,6 +172,8 @@ SUGGESTIONS = [
     ("/embedding", "Select Ollama embedding model"),
     ("/theme", "Select CLI color theme"),
     ("/tools", "List all available MCP tools"),
+    ("/prompts", "List and manage prompt registry"),
+    ("/cache", "Show result cache statistics"),
     ("/ingest", "Re-index workspace files"),
     ("/interactive", "Configure interactive mode"),
     ("/force-do", "Force retry until task succeeds"),
@@ -853,6 +855,63 @@ class CliRepl:
             print(f"  \033[32m✓ Tool responded:\033[0m\n{preview}")
         print()
 
+    async def _cmd_prompts(self, theme: "Theme", query: str) -> None:
+        """Handle /prompts [name] [edit]."""
+        from .prompt_registry import registry
+        parts = query.split(None, 2)
+
+        if len(parts) == 1:
+            # /prompts — list all
+            print(f"\n{theme.primary}{'━' * 58}\033[0m")
+            print(f"{theme.primary}  PROMPT REGISTRY\033[0m")
+            print(f"{theme.primary}{'━' * 58}\033[0m\n")
+            print(registry.format_listing())
+            print()
+            print(f"  {theme.secondary}Usage:\033[0m  /prompts <name>       — show prompt body")
+            print(f"          /prompts <name> edit  — open in $EDITOR")
+            print()
+            return
+
+        name = parts[1]
+        action = parts[2] if len(parts) > 2 else ""
+
+        if action == "edit":
+            print(f"\n{theme.secondary}[Prompts]\033[0m Opening '{name}' in editor...")
+            registry.open_in_editor(name)
+            print(f"{theme.secondary}[Prompts]\033[0m Reloaded.\n")
+            return
+
+        body = registry.get(name)
+        if body:
+            print(f"\n{theme.primary}{'━' * 58}\033[0m")
+            print(f"{theme.primary}  prompt: {name}\033[0m")
+            print(f"{theme.primary}{'━' * 58}\033[0m")
+            print(body)
+            print()
+        else:
+            print(f"\n{theme.secondary}[Prompts]\033[0m No prompt named '{name}'.\n")
+
+    def _cmd_cache(self, theme: "Theme", query: str) -> None:
+        """Handle /cache [clear]."""
+        from .cache import get_cache
+        cache = get_cache()
+        parts = query.split(None, 1)
+        if len(parts) > 1 and parts[1].strip() == "clear":
+            cache.clear()
+            print(f"\n{theme.secondary}[Cache]\033[0m Cleared.\n")
+            return
+
+        print(f"\n{theme.primary}{'━' * 58}\033[0m")
+        print(f"{theme.primary}  RESULT CACHE STATISTICS\033[0m")
+        print(f"{theme.primary}{'━' * 58}\033[0m")
+        for line in cache.summary_lines():
+            print(line)
+        enabled_str = "\033[32mENABLED\033[0m" if SETTINGS.cache_enabled else "\033[31mDISABLED\033[0m"
+        print(f"  Status:    {enabled_str}")
+        print()
+        print(f"  {theme.secondary}Usage:\033[0m  /cache clear  — flush all cached results")
+        print()
+
     async def ingest(self) -> None:
         theme = ACTIVE_THEME
         print(f"\n{theme.secondary}[Ingestion]\033[0m Indexing workspace directory...")
@@ -944,6 +1003,14 @@ class CliRepl:
                 if query == "/ingest":
                     await self.ingest()
                     print()
+                    continue
+
+                if query.startswith("/prompts"):
+                    await self._cmd_prompts(theme, query)
+                    continue
+
+                if query.startswith("/cache"):
+                    self._cmd_cache(theme, query)
                     continue
 
                 if query == "/theme":
@@ -1303,6 +1370,35 @@ class CliRepl:
                     print(f"\n{theme.text}{rendered}\033[0m")
                     current_answer.clear()
                     current_answer.append(streamed)
+
+                # ── Confidence display ────────────────────────────────────
+                conf = final_state.get("confidence")
+                if conf and hasattr(conf, "score"):
+                    score = conf.score
+                    if score >= 0.8:
+                        color = "\033[32m"  # green
+                        icon = "●"
+                    elif score >= SETTINGS.confidence_threshold:
+                        color = "\033[33m"  # yellow
+                        icon = "◐"
+                    else:
+                        color = "\033[31m"  # red
+                        icon = "○"
+                    print(f"  {color}{icon} Confidence: {score:.0%}\033[0m", end="")
+                    if conf.needs_verification:
+                        print(f"  \033[33m⚠ Low confidence — please verify the output manually.\033[0m", end="")
+                    print()
+
+                # ── Artifact list ────────────────────────────────────────
+                artifacts = final_state.get("artifacts") or []
+                if artifacts:
+                    print(f"\n  {theme.secondary}[Artifacts created]\033[0m")
+                    for art in artifacts:
+                        path = getattr(art, "path", None) or (art.get("path") if isinstance(art, dict) else "")
+                        verified = getattr(art, "verified", None) or (art.get("verified") if isinstance(art, dict) else False)
+                        check = "\033[32m✓\033[0m" if verified else "\033[33m?\033[0m"
+                        if path:
+                            print(f"    {check} {path}")
 
                 # Append completed exchange to history
                 answer_text = "".join(current_answer).strip()

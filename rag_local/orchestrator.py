@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +18,7 @@ from rag_local.tools.image_downloader.tool import download_image, search_for_ima
 from .types import ExecutionPlan, PlanTask, RagState, WorkerResult
 from .utils import safe_json_loads
 from .prompts import NEXUS_MCP_AUTHORITY_PROMPT
+from .memory import get_lessons_memory, compress_history_async, compress_history
 
 
 _LOCAL_KIND_TO_MCP = {
@@ -144,29 +146,47 @@ ALLOWED_MCP_TOOLS = {
 
 async def build_plan(state: RagState) -> ExecutionPlan:
     from .mcp_client import mcp_manager
+    from .tool_router import select_tools, format_tools_prompt
+    from .agent_memory import get_agent_memory
+    from .prompt_registry import registry as prompt_registry
     import json
+
     all_tools = await mcp_manager.get_all_tools()
-    
-    tools_prompt = ""
+
+    # ── Semantic tool selection: pre-filter to most relevant subset ─────────────
     if all_tools:
-        tools_prompt = "\nAvailable Dynamic MCP Tools (Server -> Tool):\n"
-        for t in all_tools:
-            srv = t.get('server_name')
-            name = t.get('name')
-            if srv in ALLOWED_MCP_TOOLS and (ALLOWED_MCP_TOOLS[srv] is None or name in ALLOWED_MCP_TOOLS[srv]):
-                props = t.get('input_schema', {}).get('properties', {}) or {}
-                req = t.get('input_schema', {}).get('required', []) or []
-                args_hint = ", ".join(f"{k} (required)" if k in req else k for k in props.keys())
-                desc = (t.get('description') or '').replace('\n', ' ')[:60]
-                tools_prompt += f"- {srv} -> {name}: {desc} | Args: {{{args_hint}}}\n"
+        selected_tools = await select_tools(state.user_input, all_tools, top_k=14)
+        tools_prompt = format_tools_prompt(selected_tools)
         tools_prompt += (
-            "\nTo use any of these dynamic MCP tools, you MUST set kind to 'mcp', and format 'query' as a JSON object: \n"
-            "  \"query\": {\"server_name\": \"<server_name>\", \"tool_name\": \"<tool_name>\", \"arguments\": {<args>}}\n"
+            "\n\nTo call any tool above set kind='mcp' and format query as JSON:\n"
+            '  {"server_name": "<server>", "tool_name": "<tool>", "arguments": {<args>}}'
         )
+    else:
+        tools_prompt = ""
+
+    # ── Recall from embedding memory ────────────────────────────────────────────
+    memory_context = ""
+    try:
+        memory_context = await get_agent_memory().recall(state.user_input)
+    except Exception:
+        pass
+
+    # ── Build system prompt from registry (with fallback) ──────────────────────
+    registry_prompt = prompt_registry.get("orchestrator_system")
+    system_prompt = registry_prompt or ORCHESTRATOR_SYSTEM
+    if tools_prompt:
+        system_prompt += "\n\n" + tools_prompt
+
+    lessons_block = get_lessons_memory().get_recent_lessons(n=5)
+    if lessons_block:
+        system_prompt += "\n\n" + lessons_block
+    if memory_context:
+        system_prompt += "\n\n" + memory_context
 
     client = OllamaClient()
-    system_prompt = ORCHESTRATOR_SYSTEM + "\n\n" + tools_prompt
-    messages = build_messages(system_prompt, state.user_input, compress_history(state.chat_history))
+    # Use async LLM compression for better context quality
+    history = await compress_history_async(state.chat_history, use_llm=False)
+    messages = build_messages(system_prompt, state.user_input, history)
     try:
         raw = await client.chat(
             SETTINGS.ollama_orchestrator_model,
@@ -190,7 +210,7 @@ async def build_plan(state: RagState) -> ExecutionPlan:
                 query=_parse_query(item.get("query", state.user_input)),
                 priority=int(item.get("priority", idx)),
             )
-            for idx, item in enumerate(parsed.get("tasks", [])[:4], start=1)
+            for idx, item in enumerate(parsed.get("tasks", [])[:SETTINGS.rag_plan_max_tasks], start=1)
             if isinstance(item, dict) and str(item.get("kind", "")).lower() != "retrieve"
         ]
         if not tasks:
@@ -201,17 +221,28 @@ async def build_plan(state: RagState) -> ExecutionPlan:
             response_style=str(parsed.get("response_style", "concise")),
             success_criteria=parsed.get("success_criteria", []),
         )
-    except Exception:
-        lower = state.user_input.lower()
-        tasks = []
-        if any(word in lower for word in ["code", "class", "function", "bug", "traceback", "repo"]):
-            tasks.append(PlanTask(name="code_inspection", kind="code", query=state.user_input, priority=0))
-        if any(word in lower for word in ["search", "news", "latest", "current", "today", "web", "internet"]):
-            tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=1))
-        if any(word in lower for word in ["save", "download", "write"]):
-            tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=0))
-            tasks.append(PlanTask(name="image_download", kind="download", query=state.user_input, priority=1))
-        return ExecutionPlan(objective=state.user_input, tasks=tasks, response_style="concise", success_criteria=[])
+    except ValueError as exc:
+        logging.warning("[build_plan] No valid tasks from LLM output: %s", exc)
+    except json.JSONDecodeError as exc:
+        logging.warning("[build_plan] LLM returned invalid JSON: %s", exc)
+    except Exception as exc:
+        import httpx as _httpx
+        if isinstance(exc, (_httpx.ConnectError, _httpx.TimeoutException)):
+            logging.warning("[build_plan] Ollama unreachable: %s", exc)
+        else:
+            logging.warning("[build_plan] Unexpected error: %s", exc)
+
+    # Keyword-based fallback plan
+    lower = state.user_input.lower()
+    tasks = []
+    if any(word in lower for word in ["code", "class", "function", "bug", "traceback", "repo"]):
+        tasks.append(PlanTask(name="code_inspection", kind="code", query=state.user_input, priority=0))
+    if any(word in lower for word in ["search", "news", "latest", "current", "today", "web", "internet"]):
+        tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=1))
+    if any(word in lower for word in ["save", "download", "write"]):
+        tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=0))
+        tasks.append(PlanTask(name="image_download", kind="download", query=state.user_input, priority=1))
+    return ExecutionPlan(objective=state.user_input, tasks=tasks, response_style="concise", success_criteria=[])
 
 
 async def verify_action(server_name: str, tool_name: str, arguments: dict[str, Any], result_str: str) -> tuple[bool, str]:
@@ -285,20 +316,31 @@ async def verify_action(server_name: str, tool_name: str, arguments: dict[str, A
                     content = Path(eula_path).read_text(encoding="utf-8")
                     if "eula=true" in content.lower().replace(" ", ""):
                         return True, "Verified: eula.txt accepted."
-            
+
+            # Detect the listening port dynamically from the command
+            # Supports: -p 1234, --port 1234, :1234 patterns
+            port_match = re.search(r'(?:-p|--port)\s+(\d+)', command) or re.search(r':(\d{4,5})\b', command)
+            if port_match:
+                server_port = port_match.group(1)
+            else:
+                # Default to 25565 only for Minecraft/Fabric; otherwise skip port check
+                is_minecraft = any(kw in command.lower() for kw in ["minecraft", "fabric", "spigot", "paper", "bukkit"])
+                server_port = "25565" if is_minecraft else None
+
             # Give a brief sleep for processes to start up
             await asyncio.sleep(2)
-            
+
             # Check process status on host via operations
             ps_check = await mcp_manager.call_tool("operations", "execute_operational_command", {"command": "ps aux | grep java | grep -v grep"})
-            # Check if port 25565 is listening
-            lsof_check = await mcp_manager.call_tool("operations", "execute_operational_command", {"command": "lsof -i :25565"})
-            
-            if "LISTEN" in lsof_check:
-                return True, "Verified: Server started successfully and is listening on port 25565."
+
+            if server_port:
+                lsof_check = await mcp_manager.call_tool("operations", "execute_operational_command", {"command": f"lsof -i :{server_port}"})
+                if "LISTEN" in lsof_check:
+                    return True, f"Verified: Server started successfully and is listening on port {server_port}."
+
             if "java" in ps_check:
                 return True, "Verified: Java process is running on host."
-                
+
             eula_path = os.path.join(workspace_dir, "eula.txt")
             if not os.path.exists(eula_path):
                 for p in Path(workspace_dir).glob("**/eula.txt"):
@@ -308,8 +350,9 @@ async def verify_action(server_name: str, tool_name: str, arguments: dict[str, A
                 content = Path(eula_path).read_text(encoding="utf-8")
                 if "eula=true" not in content.lower().replace(" ", ""):
                     return False, "Verification failed: Server failed to start because eula.txt has not been accepted."
-            
-            return False, f"Verification failed: java server process not detected on port 25565. Check output: {ps_check}"
+
+            port_msg = f" on port {server_port}" if server_port else ""
+            return False, f"Verification failed: java server process not detected{port_msg}. Check output: {ps_check}"
 
     return True, "Verification skipped or passed by default."
 
@@ -385,8 +428,20 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
             arguments = {"repo_path": ".", "command": "git status"}
         elif task.kind in {"code"}:
             arguments = {"command": task.query, "timeout_seconds": 30}
-        elif task.kind in {"write", "download"}:
+        elif task.kind == "write":
             arguments = {"path": "output.txt", "content": task.query}
+        elif task.kind == "download":
+            # Route download through curl via operations, not filesystem/write_file
+            server_name = "operations"
+            tool_name = "execute_operational_command"
+            # Extract a URL from the query if present, otherwise use query as-is
+            url_match = re.search(r"https?://\S+", task.query)
+            url = url_match.group(0) if url_match else task.query
+            filename = url.rstrip("/").split("/")[-1] or "downloaded_file"
+            arguments = {
+                "command": f"curl -L -o '{filename}' '{url}'",
+                "timeout_seconds": int(SETTINGS.mcp_ops_timeout),
+            }
         else:
             arguments = {"query": task.query}
 
@@ -411,15 +466,32 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
 
 
 async def run_parallel_tasks(plan: ExecutionPlan, state: RagState) -> list[WorkerResult]:
-    # Run tasks sequentially in priority order; if any task fails, abort remaining steps
-    ordered = sorted(plan.tasks, key=lambda item: item.priority)
-    results = []
-    for task in ordered:
-        res = await execute_task(task, state)
-        results.append(res)
-        if not res.success:
-            break
+    """Execute plan using the dedicated executor (parallel + self-healing)."""
+    from .executor import run_tasks
+    from .agent_memory import get_agent_memory
+
+    results = await run_tasks(plan, state)
+
+    # Store outcomes in embedding memory for future runs
+    memory = get_agent_memory()
+    for task, res in zip(
+        sorted(plan.tasks, key=lambda t: t.priority),
+        results,
+    ):
+        try:
+            tool_call = task.query if isinstance(task.query, str) else str(task.query)
+            await memory.store_task_outcome(
+                query=state.user_input,
+                task_name=task.name,
+                tool_call=tool_call[:120],
+                success=res.success,
+                summary=res.summary[:200] if res.summary else "",
+            )
+        except Exception:
+            pass  # Never let memory writes break execution
+
     return results
+
 
 
 SYNTHESIZER_SYSTEM = """You are the final synthesizer for a local RAG system.

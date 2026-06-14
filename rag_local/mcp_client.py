@@ -244,13 +244,29 @@ class MCPClientManager:
         server_name: str,
         tool_name: str,
         arguments: dict[str, Any],
+        timeout: float | None = None,
     ) -> str:
-        """Call a specific tool on a server and return the result as a string."""
+        """Call a specific tool on a server and return the result as a string.
+
+        ``timeout`` overrides the per-call deadline. When omitted, the default
+        is ``SETTINGS.mcp_ops_timeout`` for long-running operation commands and
+        60 seconds for all other tools.
+        """
         session = self.sessions.get(server_name)
         if not session:
             return f"Error: MCP Server '{server_name}' is not running or active."
 
-        # Resolve relative paths for filesystem server
+        # ── Allowlist enforcement ────────────────────────────────────────────
+        from .orchestrator import ALLOWED_MCP_TOOLS  # local import to avoid circular
+        if server_name in ALLOWED_MCP_TOOLS:
+            allowed_tools = ALLOWED_MCP_TOOLS[server_name]
+            if allowed_tools is not None and tool_name not in allowed_tools:
+                return (
+                    f"Error: Tool '{tool_name}' on server '{server_name}' is not in the"
+                    f" allowed tool list {sorted(allowed_tools)}."
+                )
+
+        # ── Resolve relative paths for filesystem server ─────────────────────
         if server_name == "filesystem" and arguments:
             from .config import WORKSPACE_DIR
             workspace_dir = str(WORKSPACE_DIR)
@@ -259,9 +275,18 @@ class MCPClientManager:
                     val = arguments[key]
                     if val and not os.path.isabs(val):
                         arguments[key] = os.path.abspath(os.path.join(workspace_dir, val))
+
+        # ── Determine call timeout ───────────────────────────────────────────
+        if timeout is None:
+            from .config import SETTINGS
+            if server_name == "operations" and tool_name == "execute_operational_command":
+                timeout = SETTINGS.mcp_ops_timeout
+            else:
+                timeout = 60.0
+
         try:
             result       = await asyncio.wait_for(
-                session.call_tool(tool_name, arguments), timeout=60.0
+                session.call_tool(tool_name, arguments), timeout=timeout
             )
             content_list = getattr(result, "content", [])
             parts: list[str] = []
@@ -274,7 +299,7 @@ class MCPClientManager:
                     parts.append("[Image Data received]")
             return "\n".join(parts) if parts else "Success: Tool executed with no text output."
         except asyncio.TimeoutError:
-            return f"Error: Tool '{tool_name}' on '{server_name}' timed out after 60s."
+            return f"Error: Tool '{tool_name}' on '{server_name}' timed out after {timeout:.0f}s."
         except Exception as e:
             return f"Error executing tool '{tool_name}' on '{server_name}': {e}"
 
