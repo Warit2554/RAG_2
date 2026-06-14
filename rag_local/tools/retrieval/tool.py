@@ -47,20 +47,14 @@ class QdrantStore:
             self.client = client
         else:
             use_local = False
-            if "localhost" in SETTINGS.qdrant_url or "127.0.0.1" in SETTINGS.qdrant_url:
-                try:
-                    with httpx.Client(timeout=1.0) as check_client:
-                        resp = check_client.get(SETTINGS.qdrant_url.rstrip("/") + "/readyz")
-                        if resp.status_code != 200:
-                            use_local = True
-                except Exception:
-                    use_local = True
+            if "localhost" in SETTINGS.qdrant_url or "127.0.0.1" in SETTINGS.qdrant_url or not SETTINGS.qdrant_url:
+                use_local = True
             if use_local:
                 local_path = SETTINGS.rag_data_dir / "qdrant_local"
                 local_path.parent.mkdir(parents=True, exist_ok=True)
-                self.client = QdrantClient(path=str(local_path))
+                self.client = QdrantClient(path=str(local_path), check_compatibility=False)
             else:
-                self.client = QdrantClient(url=SETTINGS.qdrant_url)
+                self.client = QdrantClient(url=SETTINGS.qdrant_url, check_compatibility=False)
         self.collection = SETTINGS.qdrant_collection
         self.index_file = SETTINGS.index_dir / f"{self.collection}_bm25.json"
         self.persisted = PersistedIndex.load(self.index_file)

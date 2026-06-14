@@ -20,3 +20,5 @@
 {"ts": "2026-06-14T09:47:00.428626+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
 {"ts": "2026-06-14T09:47:32.119593+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
 {"ts": "2026-06-14T09:48:34.939567+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T09:57:28.885240+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T09:59:10.616398+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}

@@ -26,3 +26,7 @@
 {"ts": "2026-06-14T09:47:32.340915+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
 {"ts": "2026-06-14T09:48:35.144234+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
 {"ts": "2026-06-14T09:48:35.145048+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-14T09:57:29.194900+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-14T09:57:29.195436+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-14T09:59:10.992238+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-14T09:59:10.993304+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}

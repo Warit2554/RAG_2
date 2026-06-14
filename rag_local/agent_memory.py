@@ -55,6 +55,21 @@ class AgentMemory:
         self._enabled = SETTINGS.agent_memory_enabled
         self._ready = False
 
+    def _get_client(self):
+        from qdrant_client import AsyncQdrantClient
+        from .config import SETTINGS
+
+        use_local = False
+        if "localhost" in SETTINGS.qdrant_url or "127.0.0.1" in SETTINGS.qdrant_url or not SETTINGS.qdrant_url:
+            use_local = True
+
+        if use_local:
+            local_path = SETTINGS.rag_data_dir / "qdrant_local"
+            local_path.parent.mkdir(parents=True, exist_ok=True)
+            return AsyncQdrantClient(path=str(local_path), check_compatibility=False)
+        else:
+            return AsyncQdrantClient(url=SETTINGS.qdrant_url, check_compatibility=False)
+
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     async def ensure_collection(self) -> None:
@@ -62,11 +77,10 @@ class AgentMemory:
         if not self._enabled or self._ready:
             return
         try:
-            from qdrant_client import AsyncQdrantClient
             from qdrant_client.models import Distance, VectorParams
             from .config import SETTINGS
 
-            client = AsyncQdrantClient(url=SETTINGS.qdrant_url)
+            client = self._get_client()
             collections = await client.get_collections()
             existing = {c.name for c in collections.collections}
             if self._collection not in existing:
@@ -99,7 +113,6 @@ class AgentMemory:
             return
         await self.ensure_collection()
         try:
-            from qdrant_client import AsyncQdrantClient
             from qdrant_client.models import PointStruct
             from .embed import OllamaClient
             from .config import SETTINGS
@@ -118,7 +131,7 @@ class AgentMemory:
                 _F_QUERY: query[:200],
                 _F_META: meta or {},
             }
-            client = AsyncQdrantClient(url=SETTINGS.qdrant_url)
+            client = self._get_client()
             await client.upsert(
                 collection_name=self._collection,
                 points=[PointStruct(id=point_id, vector=vectors[0], payload=payload)],
@@ -161,7 +174,6 @@ class AgentMemory:
             return ""
         await self.ensure_collection()
         try:
-            from qdrant_client import AsyncQdrantClient
             from .embed import OllamaClient
             from .config import SETTINGS
 
@@ -170,7 +182,7 @@ class AgentMemory:
             if not vectors:
                 return ""
 
-            client = AsyncQdrantClient(url=SETTINGS.qdrant_url)
+            client = self._get_client()
             # Fetch top_k * 3 candidates then re-rank
             hits = await client.query_points(
                 collection_name=self._collection,
