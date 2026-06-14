@@ -1,24 +1,19 @@
-=== Testing Nexus Fixes (Mocked MCP) ===
+=== Testing Generic Download Strategy (Mocked MCP) ===
 
-1. Testing routing for action verbs...
-Query: 'Create a Minecraft Fabric Server 1.21.11, download fabric1.21.11.jar first, ready to join.'
-Routed to: 'code_analysis' (Reason: The user is asking for instructions related to creating a specific software setup (Minecraft Fabric Server) and implies steps involving files/jars and technical implementation details.)
-✓ SUCCESS: Routing override works correctly.
+1. Testing routing for ISO download: 'Download the Debian stable netinst ISO image'
+Routed to: 'web_search' (Reason: The request requires downloading a specific file (Debian netinst ISO) which is external and volatile information, requiring general web search capability.)
 
-2. Testing planner for success criteria and executable tasks...
-Plan Objective: Set up and start a functional Minecraft Fabric 1.21.1 server.
+2. Testing planner for ISO download...
+Plan Objective: Download Debian stable netinst ISO
 Plan Success Criteria:
-  - Fabric 1.21.1 server JAR downloaded successfully
-  - Server files structured in a dedicated directory
-  - EULA accepted (eula.txt updated)
-  - Server started and is running/ready to accept connections on default port.
+  - official Debian download page found
+  - direct download link for Debian netinst ISO retrieved
+  - ISO file downloaded to workspace and verified
 Plan Tasks:
-  - [mcp] create_server_directory: {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "mkdir -p fabric-server-1.21.1", "timeout_seconds":
-  - [mcp] download_fabric_jar: {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "curl -o fabric-server-1.21.1/fabric-1.21.1.jar htt
-  - [mcp] accept_eula: {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "echo "}}
-  - [mcp] run_server_setup: {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "cd fabric-server-1.21.1 && java -Xmx4G -jar fabric
-Has download task: True
-Has server task: True
-✓ SUCCESS: Planner correctly generates success criteria and tasks.
+  - [mcp] search_debian_download_page: {"server_name": "duckduckgo", "tool_name": "search", "arguments": {"query": "download debian stable netinst iso image official"}}
+  - [mcp] fetch_download_page_content: {"server_name": "playwright", "tool_name": "playwright_navigate", "arguments": {"url": "placeholder_url_from_search_result"}, "priority": 2}
+  - [mcp] extract_download_link: {"server_name": "playwright", "tool_name": "playwright_get_html", "arguments": {"url": "placeholder_url_from_search_result"}, "priority": 3}
+First task query: {"server_name": "duckduckgo", "tool_name": "search", "arguments": {"query": "download debian stable netinst iso image official"}}
+✓ SUCCESS: Planner correctly plans a search/browse step for generic download without hardcoding.
 
 === All Tests Passed! ===

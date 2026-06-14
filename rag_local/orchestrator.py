@@ -41,12 +41,16 @@ The ONLY valid kinds are:
 For 'mcp' tasks, format query as a JSON object:
   {"server_name": "<server>", "tool_name": "<tool>", "arguments": {<args>}}
 
-FILE DOWNLOAD STRATEGY (use this order):
-1. Search for the official download URL using duckduckgo search.
-2. Use execute_operational_command with wget or curl to download it:
-   {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "wget -O filename.jar 'URL'", "timeout_seconds": 120}}
-3. Verify the file was downloaded with: {"server_name": "filesystem", "tool_name": "get_file_info", "arguments": {"path": "filename.jar"}}
-NEVER rely only on fetch/scrape to download binary files. Always use wget/curl via execute_operational_command.
+FILE DOWNLOAD STRATEGY (NO HALLUCINATED URLS):
+- You MUST NEVER guess, make up, or hallucinate download URLs.
+- If the user query does not provide a specific, exact download URL, you MUST find the download URL first using web tools:
+  1. Use duckduckgo search to find the official website or download page (e.g. search "download debian stable iso link").
+  2. Use fetch (fetch/fetch) or playwright (playwright_navigate and playwright_get_html) to view the page contents and identify the direct download link (anchors ending in .iso, .jar, .zip, .tar.gz, etc., or direct download buttons).
+  3. Extract/copy the direct URL.
+  4. Use execute_operational_command with curl or wget to download:
+     {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "curl -L -o target_filename 'DIRECT_URL'", "timeout_seconds": 180}}
+- Verify the file was downloaded with: {"server_name": "filesystem", "tool_name": "get_file_info", "arguments": {"path": "target_filename"}}
+- NEVER rely only on fetch/scrape to download binary files. Always use wget/curl via execute_operational_command.
 
 ACTION DETECTION AND PRIORITIZATION RULES:
 - Detect action verbs in user query: create, install, download, setup, configure, deploy.
@@ -57,32 +61,24 @@ ACTION DETECTION AND PRIORITIZATION RULES:
   3. operations / desktop-commander (to execute terminal commands)
   4. docker (to manage containers)
   5. ssh (to run remote commands)
-  6. duckduckgo / fetch (only if information is missing)
-- Web search must NOT be the first action for common tasks. Directly generate filesystem or terminal command tasks to execute the action.
+  6. duckduckgo / fetch / playwright (only if information/URL is missing)
+- Web search must NOT be the first action for common tasks, EXCEPT when downloading a file and the exact, official download URL is unknown. In that case, perform a web search and fetch/playwright tasks first to find the real URL rather than guessing it.
 - Do NOT output tutorials, advice, or guides on how the user can do it themselves. Output the exact tasks to execute it right now.
 
 Example Output:
 {
-  "objective": "Setup Minecraft Fabric Server",
+  "objective": "Download Debian ISO",
   "success_criteria": [
-    "fabric server jar downloaded",
-    "server directory created",
-    "eula.txt accepted",
-    "server started successfully",
-    "joinable on port 25565"
+    "debian iso download link found",
+    "iso file downloaded to workspace",
+    "downloaded file verified"
   ],
   "tasks": [
     {
-      "name": "create_server_dir",
+      "name": "search_debian_download_page",
       "kind": "mcp",
-      "query": {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "mkdir -p minecraft_server"}},
+      "query": {"server_name": "duckduckgo", "tool_name": "search", "arguments": {"query": "debian stable netinst iso download official page"}},
       "priority": 1
-    },
-    {
-      "name": "download_installer",
-      "kind": "mcp",
-      "query": {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "curl -o minecraft_server/fabric-installer.jar https://meta.fabricmc.net/v2/versions/loader/1.21.1/0.16.0/1.0.1/server/jar", "timeout_seconds": 120}},
-      "priority": 2
     }
   ],
   "response_style": "detailed"
@@ -142,6 +138,7 @@ ALLOWED_MCP_TOOLS = {
     "desktop-commander": None,
     "docker": None,
     "ssh": None,
+    "playwright": None,
 }
 
 

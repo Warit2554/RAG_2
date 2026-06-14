@@ -36,42 +36,34 @@ async def main():
         print(msg)
         output.append(str(msg))
         
-    log("=== Testing Nexus Fixes (Mocked MCP) ===")
+    log("=== Testing Generic Download Strategy (Mocked MCP) ===")
     
-    # 1. Test Routing Logic
-    log("\n1. Testing routing for action verbs...")
-    test_query = "Create a Minecraft Fabric Server 1.21.11, download fabric1.21.11.jar first, ready to join."
-    decision = await route_query(test_query)
-    log(f"Query: '{test_query}'")
-    log(f"Routed to: '{decision.decision.route}' (Reason: {decision.decision.reason})")
+    # Test Query 1: Debian ISO Download
+    test_query_iso = "Download the Debian stable netinst ISO image"
+    log(f"\n1. Testing routing for ISO download: '{test_query_iso}'")
+    decision_iso = await route_query(test_query_iso)
+    log(f"Routed to: '{decision_iso.decision.route}' (Reason: {decision_iso.decision.reason})")
+    assert decision_iso.decision.route != "general", "FAILED: ISO download should route to planning"
     
-    # Assert route is NOT general
-    assert decision.decision.route != "general", f"FAILED: Action verb request should not route to general, got {decision.decision.route}"
-    log("✓ SUCCESS: Routing override works correctly.")
-
-    # 2. Test Planning & Success Criteria
-    log("\n2. Testing planner for success criteria and executable tasks...")
-    state = RagState(user_input=test_query, route=decision.decision.route)
-    plan = await build_plan(state)
-    
-    log(f"Plan Objective: {plan.objective}")
+    log("\n2. Testing planner for ISO download...")
+    state_iso = RagState(user_input=test_query_iso, route=decision_iso.decision.route)
+    plan_iso = await build_plan(state_iso)
+    log(f"Plan Objective: {plan_iso.objective}")
     log("Plan Success Criteria:")
-    for sc in plan.success_criteria:
+    for sc in plan_iso.success_criteria:
         log(f"  - {sc}")
     log("Plan Tasks:")
-    for task in plan.tasks:
+    for task in plan_iso.tasks:
         log(f"  - [{task.kind}] {task.name}: {task.query[:150]}")
         
-    assert len(plan.success_criteria) > 0, "FAILED: success_criteria list should not be empty"
-    assert len(plan.tasks) > 0, "FAILED: plan should have at least one task"
-    
-    # Check if fabric server jar download or creation tasks are present
-    has_download_task = any("download" in str(task.name).lower() or "download" in str(task.query).lower() for task in plan.tasks)
-    has_server_task = any("server" in str(task.name).lower() or "server" in str(task.query).lower() for task in plan.tasks)
-    log(f"Has download task: {has_download_task}")
-    log(f"Has server task: {has_server_task}")
-    
-    log("✓ SUCCESS: Planner correctly generates success criteria and tasks.")
+    assert len(plan_iso.success_criteria) > 0, "FAILED: success_criteria list should not be empty"
+    # Ensure the first task is a search/browse/web search task to find the URL
+    first_task = plan_iso.tasks[0]
+    log(f"First task query: {first_task.query}")
+    assert "search" in first_task.name.lower() or "search" in first_task.query.lower() or "duckduckgo" in first_task.query.lower() or "playwright" in first_task.query.lower(), \
+        f"FAILED: The first task should be a search/browse task to find the URL, got {first_task.name}"
+        
+    log("✓ SUCCESS: Planner correctly plans a search/browse step for generic download without hardcoding.")
     log("\n=== All Tests Passed! ===")
     
     # Write output to file
