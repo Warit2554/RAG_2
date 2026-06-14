@@ -4,8 +4,19 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+# Locate workspace directory
+WORKSPACE_DIR = Path(".").resolve()
+PACKAGE_ROOT = Path(__file__).parent.parent.resolve()
+
+# Find config source directory
+if (WORKSPACE_DIR / "mcp_config.json").exists() or (WORKSPACE_DIR / ".env").exists():
+    CONFIG_DIR = WORKSPACE_DIR
+else:
+    CONFIG_DIR = PACKAGE_ROOT
+
 import dotenv
-dotenv.load_dotenv()
+# Load the .env from CONFIG_DIR
+dotenv.load_dotenv(CONFIG_DIR / ".env")
 
 
 def _env(name: str, default: str) -> str:
@@ -28,6 +39,10 @@ class Settings:
     rag_top_k: int = int(_env("RAG_TOP_K", "5"))
     rag_keep_alive: str = _env("RAG_KEEP_ALIVE", "1h")
     nexus_theme: str = _env("NEXUS_THEME", "Classic Theme")
+
+    def __post_init__(self) -> None:
+        if not self.rag_data_dir.is_absolute():
+            self.rag_data_dir = (WORKSPACE_DIR / self.rag_data_dir).resolve()
 
     @property
     def index_dir(self) -> Path:

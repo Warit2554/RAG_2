@@ -12,6 +12,9 @@ from typing import Any, Optional
 
 mcp = FastMCP("Operations")
 
+def get_workspace_dir() -> Path:
+    return Path(".").resolve()
+
 @mcp.tool()
 async def get_system_status() -> str:
     """Check the local host system status including CPU load, RAM usage, Disk space, and Docker health."""
@@ -266,7 +269,8 @@ async def generate_project_boilerplate(
     target_dir: Optional[str] = None
 ) -> str:
     """Create a structured folder template with files, Dockerfile, tests, and standard config for FastAPI, CLI, Node, or Next.js."""
-    base_path = Path(target_dir or ".").resolve() / project_name
+    workspace_dir = get_workspace_dir()
+    base_path = Path(target_dir or workspace_dir).resolve() / project_name
     
     if base_path.exists():
         return f"Error: Directory already exists at {base_path}"
@@ -543,7 +547,7 @@ async def execute_operational_command(
 ) -> str:
     """Run a CLI command on the host (e.g. status, docker-compose, pytest, service status, network checks)."""
     # Force execution relative to the current workspace root or specified sub-directory
-    workspace_dir = Path(".").resolve()
+    workspace_dir = get_workspace_dir()
     cwd_path = Path(directory).resolve() if directory else workspace_dir
     
     # Restrict execution directory to remain inside allowed user workspace or home

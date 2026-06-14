@@ -61,7 +61,8 @@ async def router_node(state: GraphState) -> dict[str, Any]:
 
     if route != "general" and not state.get("clarification_response"):
         from pathlib import Path
-        workspace = str(Path(".").resolve())
+        from .config import WORKSPACE_DIR
+        workspace = str(WORKSPACE_DIR)
         downloads = str(Path("~/Downloads").expanduser().resolve())
         
         system_prompt = (

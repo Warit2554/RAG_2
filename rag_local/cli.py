@@ -174,6 +174,7 @@ SUGGESTIONS = [
     ("/tools", "List all available MCP tools"),
     ("/ingest", "Re-index workspace files"),
     ("/interactive", "Configure interactive mode"),
+    ("/force-do", "Force retry until task succeeds"),
     ("/clear", "Reset conversation history"),
     ("/exit", "Quit RAG CLI"),
 ]
@@ -769,6 +770,8 @@ class CliRepl:
         self.command_history: list[str] = load_command_history()
         self.interactive_mode = "strict"
         self.interactive_timeout = 60
+        self.force_do = False          # True while /force-do is active
+        self.force_do_max_retries = 8  # safety ceiling
 
     async def _cmd_tools(self, theme: "Theme", mcp_manager: Any, parts: list[str]) -> None:
         """
@@ -854,7 +857,8 @@ class CliRepl:
         theme = ACTIVE_THEME
         print(f"\n{theme.secondary}[Ingestion]\033[0m Indexing workspace directory...")
         try:
-            result = await ingest_directory(Path("."))
+            from .config import WORKSPACE_DIR
+            result = await ingest_directory(WORKSPACE_DIR)
             print(
                 f"{theme.secondary}[Ingestion]\033[0m Success! Files seen: {result.files_seen}, "
                 f"Chunks: {result.chunks_created}, Embedded: {result.embedded}"
@@ -868,10 +872,10 @@ class CliRepl:
         ACTIVE_THEME = load_theme()
         theme = ACTIVE_THEME
 
-        print("\033[1;36m" + "─"*60)
-        print("NEXUS LOCAL RAG SYSTEM (Antigravity Engine)".center(60))
-        print("─"*60 + "\033[0m")
-        print(f"{theme.secondary}[System]{theme.text} Loaded theme: {theme.primary}{theme.name}\033[0m (type /theme to change)")
+        #print("\033[1;36m" + "─"*60)
+        #print("NEXUS LOCAL RAG SYSTEM (Antigravity Engine)".center(60))
+        #print("─"*60 + "\033[0m")
+        #print(f"{theme.secondary}[System]{theme.text} Loaded theme: {theme.primary}{theme.name}\033[0m (type /theme to change)")
         print(f"Ollama Host: {theme.secondary}{SETTINGS.ollama_host}\033[0m | Chat Model: {theme.secondary}{SETTINGS.ollama_chat_model}\033[0m | Embed Model: {theme.secondary}{SETTINGS.ollama_embed_model}\033[0m\n")
 
         from .mcp_client import mcp_manager
@@ -1061,7 +1065,25 @@ class CliRepl:
                     print()
                     continue
 
+                if query.startswith("/force-do"):
+                    remainder = query[len("/force-do"):].strip()
+                    if remainder:
+                        # /force-do <actual query>  — run immediately
+                        self.force_do = True
+                        query = remainder
+                        print(f"{theme.secondary}[Force-Do]\033[0m Retrying until success (max {self.force_do_max_retries} attempts): \033[1m{query}\033[0m")
+                        # fall through to normal pipeline handling below
+                    else:
+                        # Toggle force-do mode on/off
+                        self.force_do = not self.force_do
+                        state_label = "\033[32mON\033[0m" if self.force_do else "\033[31mOFF\033[0m"
+                        print(f"{theme.secondary}[Force-Do]\033[0m Persistent retry mode: {state_label}")
+                        print(f"  When ON, nexus will keep retrying any task until it succeeds (max {self.force_do_max_retries} attempts).")
+                        print()
+                        continue
+
                 clarification_response = None
+                force_attempt = 0
                 while True:
                     current_answer.clear()
                     first_token = True
@@ -1077,6 +1099,7 @@ class CliRepl:
                         graph_input["clarification_response"] = clarification_response
 
                     final_state = {}
+                    task_success = True
                     spinner = ThinkingSpinner(theme, "nexus is analyzing your request")
                     spinner.start()
                     try:
@@ -1091,9 +1114,26 @@ class CliRepl:
                                 plan = data.get("plan")
                                 if plan and plan.tasks:
                                     for t in plan.tasks:
-                                        print(f"{theme.secondary}[Tool]\033[0m Running {t.kind} task: {t.query}")
+                                        # Pretty-print: "server/tool: brief args" instead of raw JSON
+                                        try:
+                                            import json as _j
+                                            q = _j.loads(t.query) if isinstance(t.query, str) else t.query
+                                            srv  = q.get("server_name", t.kind)
+                                            tool = q.get("tool_name", "")
+                                            args = q.get("arguments", {})
+                                            arg_parts = []
+                                            for k, v in (args or {}).items():
+                                                v_str = str(v)
+                                                if len(v_str) > 70:
+                                                    v_str = v_str[:67] + "..."
+                                                arg_parts.append(v_str)
+                                            arg_summary = ", ".join(arg_parts)
+                                            label = f"{srv}/{tool}: {arg_summary}" if arg_summary else f"{srv}/{tool}"
+                                        except Exception:
+                                            label = f"{t.kind}: {str(t.query)[:80]}"
+                                        print(f"{theme.secondary}[Tool]\033[0m {label}")
                             elif "retrieve" in update:
-                                print(f"{theme.secondary}[Tool]\033[0m Running retrieve task: Searching indexed workspace files")
+                                print(f"{theme.secondary}[Tool]\033[0m retrieve: Searching indexed workspace files")
                             elif "synthesize" in update:
                                 synth_data = update["synthesize"]
                                 if not synth_data.get("clarification_prompt"):
@@ -1102,6 +1142,15 @@ class CliRepl:
                                         rendered = render_markdown_ansi(final_ans, theme)
                                         print(f"\n\n{theme.text}{rendered}\033[0m")
                                         current_answer.append(final_ans)
+                                    # Track success for force-do mode
+                                    if self.force_do:
+                                        code_results = synth_data.get("code_results") or []
+                                        web_results  = synth_data.get("web_results") or []
+                                        all_tool_res = code_results + web_results
+                                        if all_tool_res and not any(
+                                            getattr(r, "success", True) for r in all_tool_res
+                                        ):
+                                            task_success = False
 
                             for node_name, node_state in update.items():
                                 final_state.update(node_state)
@@ -1185,6 +1234,22 @@ class CliRepl:
                         print(f"{theme.secondary}[Interactive]\033[0m Selected: {clarification_response}")
                         continue
                     else:
+                        # ── Force-Do retry check ──────────────────────────────
+                        if self.force_do and not task_success and force_attempt < self.force_do_max_retries:
+                            force_attempt += 1
+                            print(f"\n{theme.secondary}[Force-Do]\033[0m Attempt {force_attempt}/{self.force_do_max_retries} failed — retrying...\n")
+                            # Inject failure context into the query so next attempt knows what went wrong
+                            answer_so_far = "".join(current_answer).strip()
+                            retry_hint = f"[RETRY {force_attempt}] Previous attempt failed. Try alternative methods (e.g. use wget/curl to download, try a different URL, use execute_operational_command, check file existence first). Original request: {query}"
+                            if answer_so_far:
+                                retry_hint += f"\nPrevious response summary: {answer_so_far[:400]}"
+                            graph_input = {"user_input": retry_hint, "chat_history": self.history}
+                            clarification_response = None
+                            continue
+                        elif self.force_do and not task_success:
+                            print(f"\n{theme.secondary}[Force-Do]\033[0m Max retries ({self.force_do_max_retries}) reached. Giving up.")
+                        elif self.force_do and task_success and force_attempt > 0:
+                            print(f"\n{theme.secondary}[Force-Do]\033[0m \033[32mSucceeded after {force_attempt} retries!\033[0m")
                         break
 
                 # Render the streamed answer after completion

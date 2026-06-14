@@ -197,8 +197,12 @@
         "host.docker.internal:host-gateway",
         "-e",
         "QDRANT_URL=http://host.docker.internal:6333",
+        "-e",
+        "PYTHONPATH=/app",
         "-v",
         "{{WORKSPACE}}:/workspace",
+        "-v",
+        "{{PACKAGE_ROOT}}:/app",
         "-w",
         "/workspace",
         "nexus-mcp:latest",
@@ -210,7 +214,7 @@
     "operations": {
       "command": "{{PYTHON}}",
       "args": [
-        "rag_local/tools/operations_mcp.py"
+        "{{PACKAGE_ROOT}}/rag_local/tools/operations_mcp.py"
       ]
     }
   }

@@ -39,6 +39,13 @@ The ONLY valid kinds are:
 For 'mcp' tasks, format query as a JSON object:
   {"server_name": "<server>", "tool_name": "<tool>", "arguments": {<args>}}
 
+FILE DOWNLOAD STRATEGY (use this order):
+1. Search for the official download URL using duckduckgo search.
+2. Use execute_operational_command with wget or curl to download it:
+   {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "wget -O filename.jar 'URL'", "timeout_seconds": 120}}
+3. Verify the file was downloaded with: {"server_name": "filesystem", "tool_name": "get_file_info", "arguments": {"path": "filename.jar"}}
+NEVER rely only on fetch/scrape to download binary files. Always use wget/curl via execute_operational_command.
+
 Example Output:
 {
   "objective": "Understand the repository",
@@ -277,6 +284,17 @@ async def run_parallel_tasks(plan: ExecutionPlan, state: RagState) -> list[Worke
 SYNTHESIZER_SYSTEM = """You are the final synthesizer for a local RAG system.
 Use only the provided worker results and retrieved context.
 Answer clearly, call out uncertainty, and keep the response practical.
+
+FAILURE RECOVERY RULES:
+If a tool task failed or produced an error:
+1. Identify what failed and why (e.g. URL not found, file not accessible, command error).
+2. Suggest the exact alternative command nexus should try next, for example:
+   - For file downloads: use `wget -O <filename> '<url>'` or `curl -L -o <filename> '<url>'` via execute_operational_command.
+   - For web lookups: try a more specific search query or the official domain directly.
+   - For file not found: check with list_directory or get_file_info first.
+3. If this is a RETRY attempt (query starts with [RETRY]), aggressively try alternative methods — do NOT repeat the same approach that failed.
+
+Never just give up and explain the failure. Always attempt an alternative tool path.
 """
 
 

@@ -109,7 +109,15 @@ async def _try_connect_server(
 
 class MCPClientManager:
     def __init__(self, config_path: str | Path = "mcp_config.json") -> None:
-        self.config_path = Path(config_path)
+        path = Path(config_path)
+        if not path.is_absolute():
+            from .config import WORKSPACE_DIR, PACKAGE_ROOT
+            workspace_config = WORKSPACE_DIR / path
+            if workspace_config.exists():
+                path = workspace_config
+            else:
+                path = PACKAGE_ROOT / path
+        self.config_path = path
         self._exit_stacks: dict[str, AsyncExitStack] = {}
         self.sessions: dict[str, ClientSession] = {}
         self.server_names: list[str] = []
@@ -133,11 +141,16 @@ class MCPClientManager:
             return
 
         # ── Resolve template variables ──────────────────────────────
-        workspace_dir     = str(Path(".").resolve())
+        from .config import WORKSPACE_DIR, PACKAGE_ROOT
+        workspace_dir     = str(WORKSPACE_DIR)
         python_executable = sys.executable
         home_dir          = str(Path.home())
+        package_root      = str(PACKAGE_ROOT)
 
-        dot_env       = _load_env_file(Path(workspace_dir) / ".env")
+        env_path = Path(workspace_dir) / ".env"
+        if not env_path.exists():
+            env_path = PACKAGE_ROOT / ".env"
+        dot_env       = _load_env_file(env_path)
         github_token  = dot_env.get("GITHUB_PERSONAL_ACCESS_TOKEN", "") or os.environ.get("GITHUB_PERSONAL_ACCESS_TOKEN", "")
         firecrawl_key = dot_env.get("FIRECRAWL_API_KEY", "")           or os.environ.get("FIRECRAWL_API_KEY", "")
         postgres_conn = dot_env.get("POSTGRES_CONNECTION_STRING", "")  or os.environ.get("POSTGRES_CONNECTION_STRING", "postgresql://localhost:5432/postgres")
@@ -147,6 +160,7 @@ class MCPClientManager:
                 s.replace("{{WORKSPACE}}", workspace_dir)
                  .replace("{{HOME}}", home_dir)
                  .replace("{{PYTHON}}", python_executable)
+                 .replace("{{PACKAGE_ROOT}}", package_root)
                  .replace("{{GITHUB_PERSONAL_ACCESS_TOKEN}}", github_token)
                  .replace("{{FIRECRAWL_API_KEY}}", firecrawl_key)
                  .replace("{{POSTGRES_CONNECTION_STRING}}", postgres_conn)
@@ -238,7 +252,8 @@ class MCPClientManager:
 
         # Resolve relative paths for filesystem server
         if server_name == "filesystem" and arguments:
-            workspace_dir = str(Path(".").resolve())
+            from .config import WORKSPACE_DIR
+            workspace_dir = str(WORKSPACE_DIR)
             for key in ["path", "source", "destination"]:
                 if key in arguments and isinstance(arguments[key], str):
                     val = arguments[key]
