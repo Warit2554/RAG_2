@@ -35,7 +35,7 @@ def record_llm_call(model: str, messages: list[dict[str, str]], response: str, f
 @dataclass(slots=True)
 class OllamaClient:
     host: str = SETTINGS.ollama_host
-    timeout: float = 120.0
+    timeout: float = 600.0
 
     def _url(self, path: str) -> str:
         return f"{self.host.rstrip('/')}/{path.lstrip('/')}"

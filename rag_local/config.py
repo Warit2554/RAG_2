@@ -75,7 +75,9 @@ class Settings:
 
     def __post_init__(self) -> None:
         if not self.rag_data_dir.is_absolute():
-            self.rag_data_dir = (WORKSPACE_DIR / self.rag_data_dir).resolve()
+            self.rag_data_dir = (PACKAGE_ROOT / self.rag_data_dir).resolve()
+        if not self.audit_log_path.is_absolute():
+            self.audit_log_path = (PACKAGE_ROOT / self.audit_log_path).resolve()
 
     @property
     def index_dir(self) -> Path:

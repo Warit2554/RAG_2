@@ -28,3 +28,12 @@
 {"ts": "2026-06-14T10:15:34.610396+00:00", "event": "task_start", "task": "file_creation", "kind": "write"}
 {"ts": "2026-06-14T10:15:34.617845+00:00", "event": "verification_pass", "task": "file_creation", "reason": "Passed."}
 {"ts": "2026-06-14T10:15:34.617982+00:00", "event": "task_done", "task": "file_creation", "success": true, "healed": false, "elapsed_ms": 7.3}
+{"ts": "2026-06-14T15:51:22.990787+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T16:05:12.463811+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T16:06:08.373796+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T16:23:52.262239+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T16:40:01.759595+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T16:52:38.181186+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T16:52:58.173189+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T16:58:16.756903+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T16:59:22.942703+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}

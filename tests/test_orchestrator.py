@@ -32,6 +32,12 @@ def _make_mcp_task(name: str, server: str, tool: str, args: dict, priority: int 
     }
 
 
+def _make_stream(response: str):
+    async def _stream(*args, **kwargs):
+        yield response
+    return _stream
+
+
 # ---------------------------------------------------------------------------
 # build_plan tests
 # ---------------------------------------------------------------------------
@@ -46,10 +52,9 @@ async def test_plan_respects_max_tasks_setting():
         for i in range(num_tasks)
     ]
     with (
-        patch("rag_local.orchestrator.OllamaClient.chat", new_callable=AsyncMock) as mock_chat,
+        patch("rag_local.orchestrator.OllamaClient.chat_stream", side_effect=_make_stream(_plan_response(tasks))),
         patch("rag_local.mcp_client.mcp_manager.get_all_tools", new_callable=AsyncMock, return_value=[]),
     ):
-        mock_chat.return_value = _plan_response(tasks)
         from rag_local.orchestrator import build_plan
         state = RagState(user_input="do many things", route="web_search")
         plan = await build_plan(state)
@@ -63,10 +68,9 @@ async def test_plan_has_success_criteria():
     """Planner output must include at least one success criterion."""
     tasks = [_make_mcp_task("search", "duckduckgo", "search", {"query": "test"})]
     with (
-        patch("rag_local.orchestrator.OllamaClient.chat", new_callable=AsyncMock) as mock_chat,
+        patch("rag_local.orchestrator.OllamaClient.chat_stream", side_effect=_make_stream(_plan_response(tasks, objective="Search for something"))),
         patch("rag_local.mcp_client.mcp_manager.get_all_tools", new_callable=AsyncMock, return_value=[]),
     ):
-        mock_chat.return_value = _plan_response(tasks, objective="Search for something")
         from rag_local.orchestrator import build_plan
         state = RagState(user_input="search for something", route="web_search")
         plan = await build_plan(state)
@@ -77,11 +81,16 @@ async def test_plan_has_success_criteria():
 async def test_plan_fallback_on_ollama_unreachable():
     """When Ollama is down, build_plan must return a fallback plan (not crash)."""
     import httpx
+
+    async def mock_err_stream(*args, **kwargs):
+        if False:
+            yield ""
+        raise httpx.ConnectError("Connection refused")
+
     with (
-        patch("rag_local.orchestrator.OllamaClient.chat", new_callable=AsyncMock) as mock_chat,
+        patch("rag_local.orchestrator.OllamaClient.chat_stream", side_effect=mock_err_stream),
         patch("rag_local.mcp_client.mcp_manager.get_all_tools", new_callable=AsyncMock, return_value=[]),
     ):
-        mock_chat.side_effect = httpx.ConnectError("Connection refused")
         from rag_local.orchestrator import build_plan
         state = RagState(user_input="download ubuntu iso", route="web_search")
         plan = await build_plan(state)
@@ -94,10 +103,9 @@ async def test_plan_fallback_on_ollama_unreachable():
 async def test_plan_fallback_on_bad_json():
     """Malformed LLM JSON must not crash the planner."""
     with (
-        patch("rag_local.orchestrator.OllamaClient.chat", new_callable=AsyncMock) as mock_chat,
+        patch("rag_local.orchestrator.OllamaClient.chat_stream", side_effect=_make_stream("this is not json {")),
         patch("rag_local.mcp_client.mcp_manager.get_all_tools", new_callable=AsyncMock, return_value=[]),
     ):
-        mock_chat.return_value = "this is not json {"
         from rag_local.orchestrator import build_plan
         state = RagState(user_input="search for news", route="web_search")
         plan = await build_plan(state)
@@ -168,11 +176,13 @@ async def test_plan_retries_without_json_format_on_first_failure():
 
     captured_formats: list[str | None] = []
 
-    async def mock_chat_fn(model, messages, *, format=None, **kwargs):
+    async def mock_chat_stream_fn(model, messages, *, format=None, **kwargs):
         captured_formats.append(format)
         if len(captured_formats) == 1:
+            if False:
+                yield ""
             raise ValueError("Simulated JSON constraint error")
-        return json.dumps({
+        yield json.dumps({
             "objective": "Retry success",
             "success_criteria": ["succeeds on retry"],
             "tasks": [
@@ -187,7 +197,7 @@ async def test_plan_retries_without_json_format_on_first_failure():
         })
 
     with (
-        patch("rag_local.orchestrator.OllamaClient.chat", new_callable=AsyncMock, side_effect=mock_chat_fn),
+        patch("rag_local.orchestrator.OllamaClient.chat_stream", side_effect=mock_chat_stream_fn),
         patch("rag_local.mcp_client.mcp_manager.get_all_tools", new_callable=AsyncMock, return_value=[]),
     ):
         state = RagState(user_input="check storage", route="rag")
@@ -202,4 +212,51 @@ async def test_plan_retries_without_json_format_on_first_failure():
         assert plan.objective == "Retry success"
         assert len(plan.tasks) == 1
         assert plan.tasks[0].name == "retried_task"
+
+
+@pytest.mark.asyncio
+async def test_plan_assigned_agents():
+    """Planner must extract and map tasks to Researcher or Coder correctly."""
+    from rag_local.orchestrator import build_plan
+    from rag_local.types import RagState, SharedMemoryState
+
+    tasks = [
+        {
+            "name": "research_step",
+            "kind": "mcp",
+            "query": {"server_name": "duckduckgo", "tool_name": "search", "arguments": {"query": "test"}},
+            "priority": 1,
+            "assigned_agent": "researcher"
+        },
+        {
+            "name": "coding_step",
+            "kind": "mcp",
+            "query": {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "echo 'hello'"}},
+            "priority": 2,
+            "assigned_agent": "coder"
+        },
+        {
+            "name": "default_coder_step",
+            "kind": "mcp",
+            "query": "echo 'default'",
+            "priority": 3
+            # assigned_agent missing -> should default to coder
+        }
+    ]
+
+    with (
+        patch("rag_local.orchestrator.OllamaClient.chat_stream", side_effect=_make_stream(_plan_response(tasks))),
+        patch("rag_local.mcp_client.mcp_manager.get_all_tools", new_callable=AsyncMock, return_value=[]),
+    ):
+        shared_memory = SharedMemoryState(
+            blackboard=["[Planner] Started test run."],
+            iteration=1
+        )
+        state = RagState(user_input="test query", route="web_search", shared_memory=shared_memory)
+        plan = await build_plan(state)
+
+        assert len(plan.tasks) == 3
+        assert plan.tasks[0].assigned_agent == "researcher"
+        assert plan.tasks[1].assigned_agent == "coder"
+        assert plan.tasks[2].assigned_agent == "coder"
 

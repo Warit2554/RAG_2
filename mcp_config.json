@@ -83,7 +83,7 @@
         "-i",
         "--rm",
         "-v",
-        "{{WORKSPACE}}/docker_scripts:/workspace",
+        "{{PACKAGE_ROOT}}/docker_scripts:/workspace",
         "-e",
         "MEMORIES_FILEPATH=/workspace/memories.json",
         "mcp/memory"

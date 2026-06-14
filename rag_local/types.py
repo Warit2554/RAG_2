@@ -105,11 +105,21 @@ class HeartbeatEvent(BaseModel):
     message: str = ""
 
 
+class SharedMemoryState(BaseModel):
+    """Memory structure for agent-to-agent communication."""
+    blackboard: list[str] = Field(default_factory=list)
+    research_context: list[str] = Field(default_factory=list)
+    coder_context: list[str] = Field(default_factory=list)
+    qa_results: list[str] = Field(default_factory=list)
+    iteration: int = 0
+
+
 class PlanTask(BaseModel):
     name: str
     kind: Literal["retrieve", "mcp", "write", "code", "web", "scrape", "git", "download"]
     query: str
     priority: int = 0
+    assigned_agent: Literal["researcher", "coder", "qa", "planner"] = "coder"
     depends_on: list[str] = Field(default_factory=list, description="names of tasks this one depends on")
     can_parallel: bool = True    # hint: safe to run concurrently with other tasks
     artifact_targets: list[str] = Field(default_factory=list, description="specific file paths or endpoints expected to be created/changed")
@@ -153,4 +163,5 @@ class RagState(BaseModel):
     metrics: ExecutionMetrics = Field(default_factory=ExecutionMetrics)
     artifacts: list[ArtifactRecord] = Field(default_factory=list)
     memory_context: str = ""     # recalled from embedding memory
+    shared_memory: SharedMemoryState = Field(default_factory=SharedMemoryState)
 

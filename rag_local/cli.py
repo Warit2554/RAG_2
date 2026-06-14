@@ -1387,17 +1387,23 @@ class CliRepl:
                                                 )
                                 elif node_name == "retrieve":
                                     self.log_conversation_event(f"[Retrieved Chunks] Found {len(node_state.get('retrieved_chunks', []))} workspace hits.")
-                                elif node_name == "workers":
+                                elif node_name in {"workers", "researcher", "coder"}:
                                     code_res = node_state.get("code_results") or []
                                     web_res = node_state.get("web_results") or []
                                     all_res = code_res + web_res
-                                    self.log_conversation_event("[Workers Execution Result]")
+                                    node_title = "Researcher" if node_name == "researcher" else ("Coder" if node_name == "coder" else "Workers")
+                                    self.log_conversation_event(f"[{node_title} Node Execution Result]")
                                     for res in all_res:
                                         self.log_conversation_event(
                                             f"  * Task '{res.task_name}' (success={res.success}):\n"
                                             f"    Summary: {res.summary}\n"
                                         )
-                                elif node_name == "verify":
+                                elif node_name in {"verify", "qa"}:
+                                    shared_mem = node_state.get("shared_memory")
+                                    if shared_mem and "qa_results" in shared_mem:
+                                        self.log_conversation_event("[QA Verification Result]")
+                                        for report in shared_mem["qa_results"]:
+                                            self.log_conversation_event(f"  {report}")
                                     conf_obj = node_state.get("confidence")
                                     if conf_obj:
                                         self.log_conversation_event(
@@ -1616,6 +1622,38 @@ class CliRepl:
                         }
                         
                         log_file.write_text(_json.dumps(log_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                        
+                        # Append all Shared Memory details to chronological conversation log
+                        shared_mem = final_state.get("shared_memory")
+                        if shared_mem:
+                            self.log_conversation_event("\n" + "="*40)
+                            self.log_conversation_event("AGENT COLLABORATION SHARED MEMORY:")
+                            self.log_conversation_event(f"Total Iterations: {shared_mem.get('iteration', 0)}")
+                            
+                            blackboard = shared_mem.get("blackboard")
+                            if blackboard:
+                                self.log_conversation_event("\n--- Blackboard History ---")
+                                for entry in blackboard:
+                                    self.log_conversation_event(f"  {entry}")
+                                    
+                            research_context = shared_mem.get("research_context")
+                            if research_context:
+                                self.log_conversation_event("\n--- Researcher Findings ---")
+                                for entry in research_context:
+                                    self.log_conversation_event(f"  {entry}")
+                                    
+                            coder_context = shared_mem.get("coder_context")
+                            if coder_context:
+                                self.log_conversation_event("\n--- Coder Context ---")
+                                for entry in coder_context:
+                                    self.log_conversation_event(f"  {entry}")
+                                    
+                            qa_results = shared_mem.get("qa_results")
+                            if qa_results:
+                                self.log_conversation_event("\n--- QA Verification Results ---")
+                                for entry in qa_results:
+                                    self.log_conversation_event(f"  {entry}")
+                            self.log_conversation_event("="*40 + "\n")
                         
                         # Append all LLM thinking calls to chronological conversation log
                         llm_calls = get_run_llm_calls()

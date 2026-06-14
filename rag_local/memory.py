@@ -147,8 +147,8 @@ class LessonsMemory:
 
     def __init__(self, workspace_dir: Path | str | None = None) -> None:
         if workspace_dir is None:
-            from .config import WORKSPACE_DIR
-            workspace_dir = WORKSPACE_DIR
+            from .config import PACKAGE_ROOT
+            workspace_dir = PACKAGE_ROOT
         self._path = Path(workspace_dir) / self.FILENAME
 
     # ── Public API ────────────────────────────────────────────────────────────

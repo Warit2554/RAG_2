@@ -30,7 +30,7 @@ _LOCAL_KIND_TO_MCP = {
     "download": {"server_name": "filesystem", "tool_name": "write_file"},
 }
 
-ORCHESTRATOR_SYSTEM = """You are a local RAG orchestrator that uses MCP (Model Context Protocol) tools.
+ORCHESTRATOR_SYSTEM = """You are a local Project Manager (PM) and Planner Agent. You orchestrate a team of specialized agents: Researcher and Coder.
 Create a JSON plan with keys: objective, constraints, success_criteria, tasks, response_style, confidence.
 
 'objective' is the desired outcome extracted from the user's input.
@@ -38,14 +38,24 @@ Create a JSON plan with keys: objective, constraints, success_criteria, tasks, r
 'success_criteria' is an array of strings representing verifiable success criteria for the request.
 'confidence' is a float (0.0-1.0) reflecting your certainty the plan will succeed.
 
-Each task must have: name, kind, query, priority, depends_on (list of task names), can_parallel (bool), artifact_targets (list of paths expected to be created/changed), verification_rules (list of assertions, e.g., "file_exists", "exit_code_0", "output_contains:<str>", "service_listening:<port>").
+Each task must have:
+- name: string
+- kind: "retrieve" or "mcp"
+- query: string (JSON tool call or command description)
+- priority: integer
+- assigned_agent: "researcher" or "coder"
+- depends_on: list of task names
+- can_parallel: boolean
+- artifact_targets: list of paths
+- verification_rules: list of assertions (e.g. "file_exists", "exit_code_0", "service_listening:<port>")
+
+ROLE DIVISION RULES:
+- Assign 'researcher' to tasks that gather information, search the web (duckduckgo), scrape URLs, or locate binaries/URLs.
+- Assign 'coder' to tasks that write/edit files, run operational commands (operations/execute_operational_command), execute scripts, run compilers, compile/test code, start services.
 
 The ONLY valid kinds are:
 - retrieve: search locally indexed documents for information about the codebase.
 - mcp: call a tool from a connected MCP server for everything else.
-
-For 'mcp' tasks, format query as a JSON object:
-  {"server_name": "<server>", "tool_name": "<tool>", "arguments": {<args>}}
 
 FILE DOWNLOAD STRATEGY (NO HALLUCINATED URLS):
 - You MUST NEVER guess, make up, or hallucinate download URLs.
@@ -55,12 +65,14 @@ FILE DOWNLOAD STRATEGY (NO HALLUCINATED URLS):
   3. Extract/copy the direct URL.
   4. Use execute_operational_command with curl or wget to download:
      {"server_name": "operations", "tool_name": "execute_operational_command", "arguments": {"command": "curl -L -o target_filename 'DIRECT_URL'", "timeout_seconds": 180}}
+- REQUIRED SOFTWARE/BINARY RUNTIME: If the user request requires running or setting up an application, service, or server (e.g. Minecraft server, database, software runtime, Java jar) and the required binary/executable is NOT explicitly listed as present in the HOST WORLD STATE, you MUST generate tasks to first search for the download URL of the binary/jar using duckduckgo, download it using operations/execute_operational_command (with curl/wget), perform any installation/extraction, and then launch the binary/jar using operations/execute_operational_command. Running a non-existent binary or jar will fail.
 - Verify the file was downloaded with: {"server_name": "filesystem", "tool_name": "get_file_info", "arguments": {"path": "target_filename"}}
 - NEVER rely only on fetch/scrape to download binary files. Always use wget/curl via execute_operational_command.
 
 ACTION DETECTION AND PRIORITIZATION RULES:
 - Detect action verbs in user query: create, install, download, setup, configure, deploy.
 - If the query contains action verbs, the planner MUST generate direct, executable tasks, NOT advice or information-gathering/tutorial tasks.
+- If the setup requires running a specific application, service, binary, library, or jar file (such as a Minecraft server jar, Java JDK, or database binary), the plan MUST include tasks to first search for the official download page/link, download it using operations/execute_operational_command (curl/wget), install/extract it, and then launch the service. Never assume binaries/jar files are already present unless confirmed in the world state.
 - Prioritize using tools in this order:
   1. filesystem (e.g. read_file, write_file, list_directory, get_file_info)
   2. operations (with curl/wget to download)
@@ -69,7 +81,6 @@ ACTION DETECTION AND PRIORITIZATION RULES:
   5. ssh (to run remote commands)
   6. duckduckgo / fetch / playwright (only if information/URL is missing)
 - Web search must NOT be the first action for common tasks, EXCEPT when downloading a file and the exact, official download URL is unknown. In that case, perform a web search and fetch/playwright tasks first to find the real URL rather than guessing it.
-- Do NOT output tutorials, advice, or guides on how the user can do it themselves. Output the exact tasks to execute it right now.
 
 Example Output:
 {
@@ -84,7 +95,8 @@ Example Output:
       "name": "search_debian_download_page",
       "kind": "mcp",
       "query": {"server_name": "duckduckgo", "tool_name": "search", "arguments": {"query": "debian stable netinst iso download official page"}},
-      "priority": 1
+      "priority": 1,
+      "assigned_agent": "researcher"
     }
   ],
   "response_style": "detailed"
@@ -94,12 +106,24 @@ CRITICAL RULES:
 - Use kind 'mcp' for ALL tool calls (web search, file operations, git, code, browser, etc.).
 - Use kind 'retrieve' ONLY for searching local indexed documents.
 - Do NOT use any other kind value.
+- Do NOT output tutorials or advice — execute directly.
 """
 
 
 def _normalize_kind(kind: str, query: str) -> str:
     value = kind.strip().lower()
     lower_query = query.lower().strip()
+
+    # If it is a shell command or MCP tool call, it must be normalized to 'mcp'
+    command_indicators = [
+        "mkdir", "cd ", "curl", "wget", "java", "chmod", "rm ", "echo", "cat ",
+        "touch", "python", "pip", "npm", "node", "git ", "tar ", "zip", "unzip",
+        "mv ", "cp ", "&&", "||", " > ", " >> ", " | ", "ls ", "pwd", "grep",
+        "systemctl", "launchctl", "docker", "df -", "find "
+    ]
+    if any(ind in lower_query for ind in command_indicators) or lower_query.startswith("./"):
+        if not any(phrase in lower_query for phrase in ["save as", "save to file", "write to file"]):
+            return "mcp"
 
     # Save-to-disk intent always wins — even if LLM says 'code'
     if any(phrase in lower_query for phrase in [
@@ -187,6 +211,23 @@ async def build_plan(state: RagState) -> ExecutionPlan:
     if memory_context:
         system_prompt += "\n\n" + memory_context
 
+    # ── Inject Shared Memory Context ───────────────────────────────────────────
+    shared_mem = state.shared_memory
+    if shared_mem:
+        memory_block = (
+            "SHARED MEMORY BLACKBOARD & CONTEXT:\n"
+            f"- Current Iteration: {shared_mem.iteration}\n"
+        )
+        if shared_mem.blackboard:
+            memory_block += "- Blackboard History:\n  " + "\n  ".join(shared_mem.blackboard[-10:]) + "\n"
+        if shared_mem.research_context:
+            memory_block += "- Researcher Context/Findings:\n  " + "\n  ".join(shared_mem.research_context[-5:]) + "\n"
+        if shared_mem.coder_context:
+            memory_block += "- Coder Context/Actions:\n  " + "\n  ".join(shared_mem.coder_context[-5:]) + "\n"
+        if shared_mem.qa_results:
+            memory_block += "- QA Diagnostics/Failures:\n  " + "\n  ".join(shared_mem.qa_results[-5:]) + "\n"
+        system_prompt += "\n\n" + memory_block
+
     # ── Collect host world state and inject into prompt ────────────────────────
     from .world_state import collect_world_state
     world_state = await collect_world_state(mcp_manager)
@@ -210,13 +251,16 @@ async def build_plan(state: RagState) -> ExecutionPlan:
 
     # Attempt 1: Constrained JSON mode
     try:
-        raw = await client.chat(
+        raw_chunks = []
+        async for chunk in client.chat_stream(
             SETTINGS.ollama_orchestrator_model,
             messages,
             temperature=0.2,
             keep_alive=SETTINGS.rag_keep_alive,
             format="json",
-        )
+        ):
+            raw_chunks.append(chunk)
+        raw = "".join(raw_chunks)
         parsed = safe_json_loads(raw)
         if not parsed or not isinstance(parsed, dict) or "tasks" not in parsed:
             raise ValueError("First attempt failed to return valid JSON tasks.")
@@ -225,12 +269,15 @@ async def build_plan(state: RagState) -> ExecutionPlan:
         
         # Attempt 2: Unconstrained mode with regex-based JSON extraction
         try:
-            raw = await client.chat(
+            raw_chunks = []
+            async for chunk in client.chat_stream(
                 SETTINGS.ollama_orchestrator_model,
                 messages,
                 temperature=0.2,
                 keep_alive=SETTINGS.rag_keep_alive,
-            )
+            ):
+                raw_chunks.append(chunk)
+            raw = "".join(raw_chunks)
             parsed = safe_json_loads(raw)
             if not parsed or not isinstance(parsed, dict):
                 raise ValueError("Second attempt failed to parse JSON from text response.")
@@ -248,20 +295,31 @@ async def build_plan(state: RagState) -> ExecutionPlan:
                     return json.dumps(q)
                 return str(q)
 
-            tasks = [
-                PlanTask(
-                    name=item.get("name", f"task_{idx}"),
-                    kind=_normalize_kind(str(item.get("kind", "")), str(item.get("query", state.user_input))),
-                    query=_parse_query(item.get("query", state.user_input)),
-                    priority=int(item.get("priority", idx)),
-                    depends_on=list(item.get("depends_on", [])),
-                    can_parallel=bool(item.get("can_parallel", True)),
-                    artifact_targets=list(item.get("artifact_targets", [])),
-                    verification_rules=list(item.get("verification_rules", [])),
+            tasks = []
+            for idx, item in enumerate(parsed.get("tasks", [])[:SETTINGS.rag_plan_max_tasks], start=1):
+                if not isinstance(item, dict):
+                    continue
+                q_val = _parse_query(item.get("query", state.user_input))
+                norm_kind = _normalize_kind(str(item.get("kind", "")), q_val)
+                # Skip true retrieve tasks (they are done by retrieval_node in graph)
+                if norm_kind == "retrieve":
+                    continue
+                raw_agent = str(item.get("assigned_agent", "")).lower().strip()
+                if raw_agent not in {"researcher", "coder"}:
+                    raw_agent = "researcher" if norm_kind in {"web", "scrape", "retrieve"} else "coder"
+                tasks.append(
+                    PlanTask(
+                        name=item.get("name", f"task_{idx}"),
+                        kind=norm_kind,
+                        query=q_val,
+                        priority=int(item.get("priority", idx)),
+                        assigned_agent=raw_agent,
+                        depends_on=list(item.get("depends_on", [])),
+                        can_parallel=bool(item.get("can_parallel", True)),
+                        artifact_targets=list(item.get("artifact_targets", [])),
+                        verification_rules=list(item.get("verification_rules", [])),
+                    )
                 )
-                for idx, item in enumerate(parsed.get("tasks", [])[:SETTINGS.rag_plan_max_tasks], start=1)
-                if isinstance(item, dict) and str(item.get("kind", "")).lower() != "retrieve"
-            ]
             if tasks:
                 return ExecutionPlan(
                     objective=str(parsed.get("objective", state.user_input)),
@@ -279,12 +337,15 @@ async def build_plan(state: RagState) -> ExecutionPlan:
     lower = state.user_input.lower()
     tasks = []
     if any(word in lower for word in ["code", "class", "function", "bug", "traceback", "repo"]):
-        tasks.append(PlanTask(name="code_inspection", kind="code", query=state.user_input, priority=0))
+        tasks.append(PlanTask(name="code_inspection", kind="code", query=state.user_input, priority=0, assigned_agent="coder"))
     if any(word in lower for word in ["search", "news", "latest", "current", "today", "web", "internet"]):
-        tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=1))
-    if any(word in lower for word in ["save", "download", "write", "create", "script", "generate"]):
-        tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=0))
-        tasks.append(PlanTask(name="file_creation", kind="write", query=state.user_input, priority=1))
+        tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=1, assigned_agent="researcher"))
+    if any(word in lower for word in ["download"]):
+        tasks.append(PlanTask(name="file_download", kind="download", query=state.user_input, priority=0, assigned_agent="coder"))
+    elif any(word in lower for word in ["save", "write", "create file", "write to file"]):
+        tasks.append(PlanTask(name="file_creation", kind="write", query=state.user_input, priority=0, assigned_agent="coder"))
+    elif any(word in lower for word in ["create", "setup", "install", "configure", "deploy"]):
+        tasks.append(PlanTask(name="web_lookup", kind="web", query=state.user_input, priority=0, assigned_agent="researcher"))
     return ExecutionPlan(objective=state.user_input, tasks=tasks, response_style="concise", success_criteria=[])
 
 
@@ -426,8 +487,44 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
         try:
             try:
                 params = _json.loads(task.query)
+                if not isinstance(params, dict) or "server_name" not in params:
+                    raise ValueError("Invalid MCP tool call structure")
             except Exception:
-                params = {"server_name": "duckduckgo", "tool_name": "search", "arguments": {"query": task.query}}
+                q_str = str(task.query).strip()
+                lower_q = q_str.lower()
+                
+                # Check if it looks like a shell command
+                is_command = False
+                command_indicators = [
+                    "mkdir", "cd ", "curl", "wget", "java", "chmod", "rm ", "echo", "cat ",
+                    "touch", "python", "pip", "npm", "node", "git ", "tar ", "zip", "unzip",
+                    "mv ", "cp ", "&&", "||", " > ", " >> ", " | ", "ls ", "pwd", "grep",
+                    "systemctl", "launchctl", "docker"
+                ]
+                if any(ind in q_str or ind in lower_q for ind in command_indicators) or q_str.startswith("./"):
+                    is_command = True
+                
+                if is_command:
+                    params = {
+                        "server_name": "operations",
+                        "tool_name": "execute_operational_command",
+                        "arguments": {
+                            "command": q_str,
+                            "timeout_seconds": int(SETTINGS.mcp_ops_timeout)
+                        }
+                    }
+                elif q_str.startswith(("http://", "https://")):
+                    params = {
+                        "server_name": "fetch",
+                        "tool_name": "fetch",
+                        "arguments": {"url": q_str}
+                    }
+                else:
+                    params = {
+                        "server_name": "duckduckgo",
+                        "tool_name": "search",
+                        "arguments": {"query": q_str}
+                    }
 
             server_name = params.get("server_name", "")
             tool_name   = params.get("tool_name", "")
@@ -472,7 +569,13 @@ async def execute_task(task: PlanTask, state: RagState | None = None) -> WorkerR
         elif task.kind in {"code"}:
             arguments = {"command": task.query, "timeout_seconds": 30}
         elif task.kind == "write":
-            arguments = {"path": "output.txt", "content": task.query}
+            path = "output.txt"
+            content = task.query
+            lines = [l.strip() for l in task.query.splitlines() if l.strip()]
+            if lines and (lines[0].startswith("/") or lines[0].endswith((".txt", ".properties", ".json", ".py", ".sh", ".yml", ".yaml"))):
+                path = lines[0]
+                content = "\n".join(lines[1:])
+            arguments = {"path": path, "content": content}
         elif task.kind == "download":
             # Route download through curl via operations, not filesystem/write_file
             server_name = "operations"
@@ -539,7 +642,8 @@ async def run_parallel_tasks(plan: ExecutionPlan, state: RagState) -> list[Worke
 
 
 SYNTHESIZER_SYSTEM = """You are the final synthesizer for a local RAG system.
-Use only the provided worker results and retrieved context.
+Use the provided worker results, retrieved context, and the shared agent memory blackboard.
+Summarize the collaborative execution history, showing clearly what each agent (Researcher, Coder, QA) did, their files/directories/outputs, and verify the final status.
 Answer clearly, call out uncertainty, and keep the response practical.
 
 BEHAVIOR RULES FOR ACTIONS:
@@ -577,6 +681,25 @@ async def synthesize(state: RagState, config: Any = None) -> str:
         f"Route: {state.route}",
         f"Plan:\n{simplified_plan}" if simplified_plan else "Plan: None"
     ]
+    shared_mem = state.shared_memory
+    if shared_mem:
+        memory_lines = [
+            "SHARED MEMORY BLACKBOARD & CONTEXT:",
+            f"- Current Iteration: {shared_mem.iteration}"
+        ]
+        if shared_mem.blackboard:
+            memory_lines.append("- Blackboard logs:")
+            memory_lines.extend(f"  {line}" for line in shared_mem.blackboard)
+        if shared_mem.research_context:
+            memory_lines.append("- Research Context:")
+            memory_lines.extend(f"  {line}" for line in shared_mem.research_context)
+        if shared_mem.coder_context:
+            memory_lines.append("- Coder Context:")
+            memory_lines.extend(f"  {line}" for line in shared_mem.coder_context)
+        if shared_mem.qa_results:
+            memory_lines.append("- QA Results:")
+            memory_lines.extend(f"  {line}" for line in shared_mem.qa_results)
+        content_lines.append("\n".join(memory_lines))
     if state.retrieved_chunks:
         content_lines.append("Retrieved chunks:")
         for hit in state.retrieved_chunks[:5]:
@@ -692,6 +815,23 @@ async def build_replan(
     )
 
     system_prompt = REPLANNER_SYSTEM
+
+    # ── Inject Shared Memory Context ───────────────────────────────────────────
+    shared_mem = state.shared_memory
+    if shared_mem:
+        memory_block = (
+            "SHARED MEMORY BLACKBOARD & CONTEXT:\n"
+            f"- Current Iteration: {shared_mem.iteration}\n"
+        )
+        if shared_mem.blackboard:
+            memory_block += "- Blackboard History:\n  " + "\n  ".join(shared_mem.blackboard[-10:]) + "\n"
+        if shared_mem.research_context:
+            memory_block += "- Researcher Context/Findings:\n  " + "\n  ".join(shared_mem.research_context[-5:]) + "\n"
+        if shared_mem.coder_context:
+            memory_block += "- Coder Context/Actions:\n  " + "\n  ".join(shared_mem.coder_context[-5:]) + "\n"
+        if shared_mem.qa_results:
+            memory_block += "- QA Diagnostics/Failures:\n  " + "\n  ".join(shared_mem.qa_results[-5:]) + "\n"
+        system_prompt += "\n\n" + memory_block
     
     # Inject world state
     from .world_state import collect_world_state
@@ -713,13 +853,16 @@ async def build_replan(
     parsed = None
     # Attempt 1: Constrained JSON Mode
     try:
-        raw = await client.chat(
+        raw_chunks = []
+        async for chunk in client.chat_stream(
             SETTINGS.ollama_orchestrator_model,
             messages,
             temperature=0.2,
             keep_alive=SETTINGS.rag_keep_alive,
             format="json",
-        )
+        ):
+            raw_chunks.append(chunk)
+        raw = "".join(raw_chunks)
         parsed = safe_json_loads(raw)
         if not parsed or not isinstance(parsed, dict) or "tasks" not in parsed:
             raise ValueError("First replan attempt failed to return valid JSON tasks.")
@@ -727,12 +870,15 @@ async def build_replan(
         logging.warning("[Replanner] JSON-constrained replan failed: %s. Retrying without constraint...", exc)
         # Attempt 2: Unconstrained Mode
         try:
-            raw = await client.chat(
+            raw_chunks = []
+            async for chunk in client.chat_stream(
                 SETTINGS.ollama_orchestrator_model,
                 messages,
                 temperature=0.2,
                 keep_alive=SETTINGS.rag_keep_alive,
-            )
+            ):
+                raw_chunks.append(chunk)
+            raw = "".join(raw_chunks)
             parsed = safe_json_loads(raw)
         except Exception as exc2:
             logging.error("[Replanner] Replanning failed completely: %s", exc2)
@@ -744,20 +890,27 @@ async def build_replan(
                     return json.dumps(q)
                 return str(q)
 
-            tasks = [
-                PlanTask(
-                    name=item.get("name", f"task_{idx}"),
-                    kind=_normalize_kind(str(item.get("kind", "")), str(item.get("query", state.user_input))),
-                    query=_parse_query(item.get("query", state.user_input)),
-                    priority=int(item.get("priority", idx)),
-                    depends_on=list(item.get("depends_on", [])),
-                    can_parallel=bool(item.get("can_parallel", True)),
-                    artifact_targets=list(item.get("artifact_targets", [])),
-                    verification_rules=list(item.get("verification_rules", [])),
+            tasks = []
+            for idx, item in enumerate(parsed.get("tasks", [])[:SETTINGS.rag_plan_max_tasks], start=1):
+                if not isinstance(item, dict):
+                    continue
+                q_val = _parse_query(item.get("query", state.user_input))
+                norm_kind = _normalize_kind(str(item.get("kind", "")), q_val)
+                # Skip true retrieve tasks (they are done by retrieval_node in graph)
+                if norm_kind == "retrieve":
+                    continue
+                tasks.append(
+                    PlanTask(
+                        name=item.get("name", f"task_{idx}"),
+                        kind=norm_kind,
+                        query=q_val,
+                        priority=int(item.get("priority", idx)),
+                        depends_on=list(item.get("depends_on", [])),
+                        can_parallel=bool(item.get("can_parallel", True)),
+                        artifact_targets=list(item.get("artifact_targets", [])),
+                        verification_rules=list(item.get("verification_rules", [])),
+                    )
                 )
-                for idx, item in enumerate(parsed.get("tasks", [])[:SETTINGS.rag_plan_max_tasks], start=1)
-                if isinstance(item, dict) and str(item.get("kind", "")).lower() != "retrieve"
-            ]
             if tasks:
                 return ExecutionPlan(
                     objective=str(parsed.get("objective", state.plan.objective if state.plan else state.user_input)),

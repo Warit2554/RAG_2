@@ -53,6 +53,7 @@ class GraphState(TypedDict, total=False):
     artifacts: list[ArtifactRecord]
     memory_context: str
     confidence: ConfidenceScore
+    shared_memory: dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -210,11 +211,30 @@ async def memory_recall_node(state: GraphState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def planning_node(state: GraphState) -> dict[str, Any]:
-    plan = await build_plan(RagState(**{
+    # Initialize shared memory if missing
+    shared_memory = state.get("shared_memory")
+    if not shared_memory:
+        shared_memory = {
+            "blackboard": ["[Planner] Project started. Planning high-level steps..."],
+            "research_context": [],
+            "coder_context": [],
+            "qa_results": [],
+            "iteration": 0
+        }
+    
+    rag_state = RagState(**{
         k: v for k, v in state.items()
-        if k in RagState.model_fields
-    }))
-    return {"plan": plan}
+        if k in RagState.model_fields and k != "shared_memory"
+    })
+    from rag_local.types import SharedMemoryState
+    rag_state.shared_memory = SharedMemoryState(**shared_memory)
+
+    plan = await build_plan(rag_state)
+    
+    # Update blackboard
+    shared_memory["blackboard"].append(f"[Planner] Iteration {shared_memory.get('iteration', 0)}. Created plan with {len(plan.tasks)} tasks. Objective: {plan.objective}")
+    
+    return {"plan": plan, "shared_memory": shared_memory}
 
 
 # ---------------------------------------------------------------------------
@@ -229,24 +249,96 @@ async def retrieval_node(state: GraphState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Workers node
+# Researcher node
 # ---------------------------------------------------------------------------
 
-async def execute_workers_node(state: GraphState) -> dict[str, Any]:
+async def researcher_node(state: GraphState) -> dict[str, Any]:
     plan = state.get("plan")
+    shared_memory = state.get("shared_memory") or {}
     if not plan:
         return {}
-    rag_state = RagState(**{
-        k: v for k, v in state.items()
-        if k in RagState.model_fields
-    })
-    results = await run_parallel_tasks(plan, rag_state)
-    code_results = [r for r in results if r.kind in {"code", "git", "download", "mcp", "write"}]
-    web_results = [r for r in results if r.kind in {"web", "scrape"}]
-    retrieved = state.get("retrieved_chunks", [])
+        
+    researcher_tasks = [t for t in plan.tasks if t.assigned_agent == "researcher"]
+    if not researcher_tasks:
+        shared_memory.setdefault("blackboard", []).append("[Researcher] No research tasks assigned.")
+        return {"shared_memory": shared_memory}
+        
+    shared_memory.setdefault("blackboard", []).append("[Researcher] Beginning research tasks...")
+    
+    from .orchestrator import execute_task
+    results = []
+    for t in sorted(researcher_tasks, key=lambda x: x.priority):
+        shared_memory["blackboard"].append(f"[Researcher] Running task '{t.name}': {t.query}")
+        res = await execute_task(t, state=RagState(**{k: v for k, v in state.items() if k in RagState.model_fields and k != "shared_memory"}))
+        results.append(res)
+        if res.success:
+            summary = res.summary or ""
+            if len(summary) > 500:
+                summary = summary[:500] + "..."
+            shared_memory["blackboard"].append(f"[Researcher] Completed task '{t.name}' successfully.")
+            shared_memory.setdefault("research_context", []).append(f"Task '{t.name}' query: {t.query}\nFindings: {summary}")
+        else:
+            shared_memory["blackboard"].append(f"[Researcher] Task '{t.name}' failed: {res.summary}")
+            
+    # Merge existing web_results / code_results with new ones
+    existing_web = state.get("web_results") or []
+    new_web = [r for r in results if r.kind in {"web", "scrape"}]
+    existing_code = state.get("code_results") or []
+    new_code = [r for r in results if r.kind in {"code", "git", "download", "mcp", "write"}]
+    
+    return {
+        "web_results": list(existing_web) + new_web,
+        "code_results": list(existing_code) + new_code,
+        "shared_memory": shared_memory
+    }
 
+
+# ---------------------------------------------------------------------------
+# Coder node
+# ---------------------------------------------------------------------------
+
+async def coder_node(state: GraphState) -> dict[str, Any]:
+    plan = state.get("plan")
+    shared_memory = state.get("shared_memory") or {}
+    if not plan:
+        return {}
+        
+    coder_tasks = [t for t in plan.tasks if t.assigned_agent == "coder"]
+    if not coder_tasks:
+        shared_memory.setdefault("blackboard", []).append("[Coder] No implementation tasks assigned.")
+        return {"shared_memory": shared_memory}
+        
+    shared_memory.setdefault("blackboard", []).append("[Coder] Beginning implementation/coding tasks...")
+    
+    from .orchestrator import execute_task
+    results = []
+    
+    # Pack shared memory into state for context awareness
+    from rag_local.types import SharedMemoryState
+    rag_state = RagState(**{k: v for k, v in state.items() if k in RagState.model_fields and k != "shared_memory"})
+    rag_state.shared_memory = SharedMemoryState(**shared_memory)
+
+    for t in sorted(coder_tasks, key=lambda x: x.priority):
+        shared_memory["blackboard"].append(f"[Coder] Running task '{t.name}': {t.query}")
+        res = await execute_task(t, state=rag_state)
+        results.append(res)
+        if res.success:
+            summary = res.summary or ""
+            if len(summary) > 500:
+                summary = summary[:500] + "..."
+            shared_memory["blackboard"].append(f"[Coder] Completed task '{t.name}' successfully.")
+            shared_memory.setdefault("coder_context", []).append(f"Task '{t.name}' executed.\nOutput: {summary}")
+        else:
+            shared_memory["blackboard"].append(f"[Coder] Task '{t.name}' failed: {res.summary}")
+            
+    # Merge existing web_results / code_results with new ones
+    existing_web = state.get("web_results") or []
+    new_web = [r for r in results if r.kind in {"web", "scrape"}]
+    existing_code = state.get("code_results") or []
+    new_code = [r for r in results if r.kind in {"code", "git", "download", "mcp", "write"}]
+    
     # Collect artifacts from results
-    artifacts: list[ArtifactRecord] = []
+    artifacts: list[ArtifactRecord] = list(state.get("artifacts") or [])
     from datetime import datetime, timezone
     for res in results:
         for art in res.artifacts:
@@ -261,29 +353,76 @@ async def execute_workers_node(state: GraphState) -> dict[str, Any]:
                     ))
 
     return {
-        "code_results": code_results,
-        "web_results": web_results,
-        "retrieved_chunks": retrieved,
-        "artifacts": artifacts,
+        "web_results": list(existing_web) + new_web,
+        "code_results": list(existing_code) + new_code,
+        "shared_memory": shared_memory,
+        "artifacts": artifacts
     }
 
 
 # ---------------------------------------------------------------------------
-# Verification node (post-workers)
+# QA node
 # ---------------------------------------------------------------------------
 
-async def verify_node(state: GraphState) -> dict[str, Any]:
-    """Score confidence after execution and flag low-confidence runs."""
+async def qa_node(state: GraphState) -> dict[str, Any]:
     plan = state.get("plan")
+    shared_memory = state.get("shared_memory") or {}
     if not plan:
         return {}
+        
+    shared_memory.setdefault("blackboard", []).append("[QA] Starting verification and validation checks...")
+    
+    all_results = list(state.get("code_results") or []) + list(state.get("web_results") or [])
+    
+    from .executor import VerificationAgent
+    qa_reports = []
+    has_failures = False
+    
+    for t in plan.tasks:
+        result = next((r for r in all_results if r.task_name == t.name), None)
+        if not result:
+            continue
+        
+        for rule in t.verification_rules:
+            passed, msg = await VerificationAgent.check(rule, result.summary)
+            if passed:
+                qa_reports.append(f"[PASS] Task '{t.name}' rule '{rule}': {msg}")
+            else:
+                qa_reports.append(f"[FAIL] Task '{t.name}' rule '{rule}': {msg}")
+                has_failures = True
+                result.success = False
+                
+        if not result.success:
+            qa_reports.append(f"[FAIL] Task '{t.name}' execution failed: {result.summary[:200]}")
+            has_failures = True
+            
+    if not qa_reports:
+        for res in all_results:
+            if not res.success:
+                qa_reports.append(f"[FAIL] Task '{res.task_name}' failed.")
+                has_failures = True
+            else:
+                qa_reports.append(f"[PASS] Task '{res.task_name}' succeeded.")
+                
+    confidence = None
     try:
         from .executor import score_confidence
-        all_results = list(state.get("code_results") or []) + list(state.get("web_results") or [])
         confidence = await score_confidence(plan, all_results)
-        return {"confidence": confidence}
     except Exception:
-        return {}
+        pass
+        
+    shared_memory["qa_results"] = qa_reports
+    if has_failures:
+        shared_memory["blackboard"].append(f"[QA] Validation FAILED with errors. Routing back to Planner for self-healing.")
+    else:
+        shared_memory["blackboard"].append(f"[QA] Validation PASSED. All verification rules satisfied.")
+        
+    res_dict = {
+        "shared_memory": shared_memory
+    }
+    if confidence:
+        res_dict["confidence"] = confidence
+    return res_dict
 
 
 # ---------------------------------------------------------------------------
@@ -294,10 +433,19 @@ async def synthesize_node(state: GraphState, config: Optional[RunnableConfig] = 
     prompt = state.get("clarification_prompt")
     if prompt:
         return {"clarification_prompt": prompt}
+    
+    # Map GraphState to RagState
     rag_state = RagState(**{
         k: v for k, v in state.items()
-        if k in RagState.model_fields
+        if k in RagState.model_fields and k != "shared_memory"
     })
+    
+    # Initialize / map shared memory
+    shared_memory = state.get("shared_memory")
+    if shared_memory:
+        from rag_local.types import SharedMemoryState
+        rag_state.shared_memory = SharedMemoryState(**shared_memory)
+        
     answer = await synthesize(rag_state, config)
     return {"final_answer": answer}
 
@@ -320,6 +468,33 @@ def _retrieval_router(state: GraphState) -> str:
     return "retrieve"
 
 
+def _retrieval_agent_router(state: GraphState) -> str:
+    """Route to retrieve node first if needed, otherwise straight to researcher agent."""
+    dest = _retrieval_router(state)
+    return "retrieve" if dest == "retrieve" else "researcher"
+
+
+def _qa_router(state: GraphState) -> str:
+    """Decide whether to loop back to plan (re-plan) or proceed to synthesize."""
+    shared_memory = state.get("shared_memory")
+    if not shared_memory:
+        return "synthesize"
+        
+    iteration = shared_memory.get("iteration", 0)
+    if iteration >= 2: # Max 2 retries (3 iterations total)
+        return "synthesize"
+        
+    qa_results = shared_memory.get("qa_results", [])
+    has_failures = any("[fail]" in r.lower() or "fail" in r.lower() for r in qa_results)
+    
+    if has_failures:
+        # Increment iteration count
+        shared_memory["iteration"] = iteration + 1
+        return "plan"
+        
+    return "synthesize"
+
+
 # ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
@@ -332,8 +507,9 @@ def build_graph():
     graph.add_node("memory_recall", memory_recall_node)
     graph.add_node("plan", planning_node)
     graph.add_node("retrieve", retrieval_node)
-    graph.add_node("workers", execute_workers_node)
-    graph.add_node("verify", verify_node)
+    graph.add_node("researcher", researcher_node)
+    graph.add_node("coder", coder_node)
+    graph.add_node("qa", qa_node)
     graph.add_node("synthesize", synthesize_node)
 
     def route_selector(state: GraphState) -> str:
@@ -353,18 +529,29 @@ def build_graph():
     )
     graph.add_edge("general", "synthesize")
     graph.add_edge("memory_recall", "plan")
-    # After planning, decide whether to retrieve from Qdrant or go straight to workers
+    
+    # Conditional edge routing to retrieval or straight to researcher agent
     graph.add_conditional_edges(
         "plan",
-        _retrieval_router,
+        _retrieval_agent_router,
         {
             "retrieve": "retrieve",
-            "workers": "workers",
+            "researcher": "researcher",
         },
     )
-    graph.add_edge("retrieve", "workers")
-    graph.add_edge("workers", "verify")
-    graph.add_edge("verify", "synthesize")
+    graph.add_edge("retrieve", "researcher")
+    graph.add_edge("researcher", "coder")
+    graph.add_edge("coder", "qa")
+    
+    # Self-healing loop back to plan if QA fails
+    graph.add_conditional_edges(
+        "qa",
+        _qa_router,
+        {
+            "plan": "plan",
+            "synthesize": "synthesize",
+        },
+    )
     graph.add_edge("synthesize", END)
     return graph.compile()
 
