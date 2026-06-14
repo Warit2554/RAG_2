@@ -1,0 +1,1 @@
+Create a minecraft server local 100% and ready to join on /root/minecraft_server

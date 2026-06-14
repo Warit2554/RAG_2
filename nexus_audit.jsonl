@@ -22,3 +22,9 @@
 {"ts": "2026-06-14T09:48:34.939567+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
 {"ts": "2026-06-14T09:57:28.885240+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
 {"ts": "2026-06-14T09:59:10.616398+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-14T10:15:32.826897+00:00", "event": "task_start", "task": "web_lookup", "kind": "web"}
+{"ts": "2026-06-14T10:15:34.609981+00:00", "event": "verification_pass", "task": "web_lookup", "reason": "Passed."}
+{"ts": "2026-06-14T10:15:34.610196+00:00", "event": "task_done", "task": "web_lookup", "success": true, "healed": false, "elapsed_ms": 1782.9}
+{"ts": "2026-06-14T10:15:34.610396+00:00", "event": "task_start", "task": "file_creation", "kind": "write"}
+{"ts": "2026-06-14T10:15:34.617845+00:00", "event": "verification_pass", "task": "file_creation", "reason": "Passed."}
+{"ts": "2026-06-14T10:15:34.617982+00:00", "event": "task_done", "task": "file_creation", "success": true, "healed": false, "elapsed_ms": 7.3}
