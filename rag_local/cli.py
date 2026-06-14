@@ -811,12 +811,26 @@ async def unload_ollama_model(model_name: str) -> None:
 
 class CliRepl:
     def __init__(self) -> None:
+        import uuid
         self.history: list[dict[str, str]] = []
         self.command_history: list[str] = load_command_history()
         self.interactive_mode = SETTINGS.interactive_mode
         self.interactive_timeout = SETTINGS.interactive_timeout
         self.force_do = False          # True while /force-do is active
         self.force_do_max_retries = 8  # safety ceiling
+        self.conversation_id = uuid.uuid4().hex
+
+    def log_conversation_event(self, msg: str) -> None:
+        """Appends a raw text log message to the conversation's log file."""
+        try:
+            from rag_local.config import WORKSPACE_DIR
+            nexus_dir = WORKSPACE_DIR / ".nexus"
+            nexus_dir.mkdir(parents=True, exist_ok=True)
+            log_file = nexus_dir / f"{self.conversation_id}.log"
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(msg + "\n")
+        except Exception:
+            pass
 
     async def _cmd_tools(self, theme: "Theme", mcp_manager: Any, parts: list[str]) -> None:
         """
@@ -1035,6 +1049,8 @@ class CliRepl:
 
                 if query == "/clear":
                     self.history = []
+                    import uuid
+                    self.conversation_id = uuid.uuid4().hex
                     print(f"{theme.secondary}[System]\033[0m Conversation history cleared.")
                     continue
 
@@ -1225,6 +1241,16 @@ class CliRepl:
                 while True:
                     from rag_local.embed import clear_run_llm_calls
                     clear_run_llm_calls()
+                    
+                    # Log header for new query
+                    from datetime import datetime
+                    self.log_conversation_event(f"\n" + "="*60)
+                    self.log_conversation_event(f"User Query: {query}")
+                    self.log_conversation_event(f"Timestamp: {datetime.now().isoformat()}")
+                    if clarification_response:
+                        self.log_conversation_event(f"Clarification Response: {clarification_response}")
+                    self.log_conversation_event("="*60)
+
                     current_answer.clear()
                     first_token = True
                     config = {
@@ -1336,6 +1362,51 @@ class CliRepl:
 
                             for node_name, node_state in update.items():
                                 final_state.update(node_state)
+                                # Log node execution details to .log file
+                                if node_name == "router":
+                                    self.log_conversation_event(
+                                        f"[Router Decision] Route: {node_state.get('route')} | Reason: {node_state.get('route_reason')}"
+                                    )
+                                elif node_name == "plan":
+                                    plan_obj = node_state.get("plan")
+                                    if plan_obj:
+                                        self.log_conversation_event(f"[Planner Plan Generated] Objective: {plan_obj.objective}")
+                                        if getattr(plan_obj, "success_criteria", None):
+                                            self.log_conversation_event("  Success Criteria:")
+                                            for sc in plan_obj.success_criteria:
+                                                self.log_conversation_event(f"    - {sc}")
+                                        if getattr(plan_obj, "constraints", None):
+                                            self.log_conversation_event("  Constraints:")
+                                            for c in plan_obj.constraints:
+                                                self.log_conversation_event(f"    - {c}")
+                                        if plan_obj.tasks:
+                                            self.log_conversation_event("  Tasks:")
+                                            for t in plan_obj.tasks:
+                                                self.log_conversation_event(
+                                                    f"    - {t.name} (Kind: {t.kind}, Priority: {t.priority}) | Query/Arguments: {t.query}"
+                                                )
+                                elif node_name == "retrieve":
+                                    self.log_conversation_event(f"[Retrieved Chunks] Found {len(node_state.get('retrieved_chunks', []))} workspace hits.")
+                                elif node_name == "workers":
+                                    code_res = node_state.get("code_results") or []
+                                    web_res = node_state.get("web_results") or []
+                                    all_res = code_res + web_res
+                                    self.log_conversation_event("[Workers Execution Result]")
+                                    for res in all_res:
+                                        self.log_conversation_event(
+                                            f"  * Task '{res.task_name}' (success={res.success}):\n"
+                                            f"    Summary: {res.summary}\n"
+                                        )
+                                elif node_name == "verify":
+                                    conf_obj = node_state.get("confidence")
+                                    if conf_obj:
+                                        self.log_conversation_event(
+                                            f"[Verification Layer] Confidence: {conf_obj.score:.0%} | Reason: {conf_obj.reason} | Verify manually: {conf_obj.needs_verification}"
+                                        )
+                                elif node_name == "synthesize":
+                                    ans = node_state.get("final_answer")
+                                    if ans:
+                                        self.log_conversation_event(f"\n[Response Synthesizer Output]:\n{ans}\n")
 
                             # Update spinner message based on current stage of the graph
                             if "plan" in update:
@@ -1545,6 +1616,18 @@ class CliRepl:
                         }
                         
                         log_file.write_text(_json.dumps(log_data, indent=2, ensure_ascii=False), encoding="utf-8")
+                        
+                        # Append all LLM thinking calls to chronological conversation log
+                        llm_calls = get_run_llm_calls()
+                        if llm_calls:
+                            self.log_conversation_event("\n" + "-"*40)
+                            self.log_conversation_event("LLM THINKING & PROMPT LOGS:")
+                            for idx, call in enumerate(llm_calls, start=1):
+                                self.log_conversation_event(f"LLM Call #{idx} - Model: {call['model']} | Format: {call.get('format')}")
+                                for msg in call["messages"]:
+                                    self.log_conversation_event(f"  [{msg.get('role', 'unknown').upper()}]:\n{msg.get('content')}")
+                                self.log_conversation_event(f"  [RESPONSE]:\n{call['response']}")
+                                self.log_conversation_event("-" * 40)
                     except Exception:
                         pass
                 print("\n")

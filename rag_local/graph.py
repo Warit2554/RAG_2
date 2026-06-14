@@ -223,7 +223,9 @@ async def planning_node(state: GraphState) -> dict[str, Any]:
 
 async def retrieval_node(state: GraphState) -> dict[str, Any]:
     retrieval = await hybrid_retrieve(state["user_input"])
-    return {"retrieved_chunks": retrieval.hits}
+    from .tools.retrieval.tool import compress_context_with_embeddings
+    compressed_hits = await compress_context_with_embeddings(state["user_input"], retrieval.hits)
+    return {"retrieved_chunks": compressed_hits}
 
 
 # ---------------------------------------------------------------------------

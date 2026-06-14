@@ -561,7 +561,22 @@ Never just give up and explain the failure. Always attempt an alternative tool p
 
 async def synthesize(state: RagState, config: Any = None) -> str:
     client = OllamaClient()
-    content_lines = [f"User request: {state.user_input}", f"Route: {state.route}", f"Plan: {state.plan.model_dump() if state.plan else {}}"]
+    simplified_plan = ""
+    if state.plan:
+        simplified_tasks = [
+            f"  - Task '{t.name}' (Kind: {t.kind}) | Query/Arguments: {t.query}"
+            for t in state.plan.tasks
+        ]
+        simplified_plan = (
+            f"Plan Objective: {state.plan.objective}\n"
+            f"Plan Constraints: {state.plan.constraints}\n"
+            f"Plan Tasks:\n" + "\n".join(simplified_tasks)
+        )
+    content_lines = [
+        f"User request: {state.user_input}",
+        f"Route: {state.route}",
+        f"Plan:\n{simplified_plan}" if simplified_plan else "Plan: None"
+    ]
     if state.retrieved_chunks:
         content_lines.append("Retrieved chunks:")
         for hit in state.retrieved_chunks[:5]:
@@ -570,16 +585,16 @@ async def synthesize(state: RagState, config: Any = None) -> str:
         content_lines.append("Code results:")
         for result in state.code_results:
             summary = result.summary or ""
-            if len(summary) > 4000:
-                summary = summary[:4000] + "\n... [TRUNCATED due to length] ..."
-            content_lines.append(f"- {result.task_name}: {summary}")
+            if len(summary) > 1200:
+                summary = summary[:1200] + "\n... [TRUNCATED FOR CONTEXT OPTIMIZATION] ..."
+            content_lines.append(f"- {result.task_name} (success={result.success}): {summary}")
     if state.web_results:
         content_lines.append("Web results:")
         for result in state.web_results:
             summary = result.summary or ""
-            if len(summary) > 4000:
-                summary = summary[:4000] + "\n... [TRUNCATED due to length] ..."
-            content_lines.append(f"- {result.task_name}: {summary}")
+            if len(summary) > 1200:
+                summary = summary[:1200] + "\n... [TRUNCATED FOR CONTEXT OPTIMIZATION] ..."
+            content_lines.append(f"- {result.task_name} (success={result.success}): {summary}")
     if state.general_answer:
         content_lines.append(f"General answer: {state.general_answer}")
 

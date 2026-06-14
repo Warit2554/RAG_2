@@ -115,3 +115,55 @@ async def test_embed_falls_back_to_serial_on_exception():
         result = await client.embed("nomic-embed-text", texts)
 
     assert len(result) == len(texts)
+
+
+@pytest.mark.asyncio
+async def test_compress_context_with_embeddings():
+    """compress_context_with_embeddings should keep only high-similarity sections and snip others."""
+    from rag_local.types import SearchHit
+    from rag_local.tools.retrieval.tool import compress_context_with_embeddings
+
+    query = "find fabric server eula"
+    content = (
+        "To setup a fabric server, you must sign eula.txt first. "
+        "This is a crucial first step for setting up any Minecraft server using Fabric. "
+        "Make sure to read the terms and conditions carefully before proceeding. "
+        "Once you have signed it, you can run the server jar file using your terminal.\n\n"
+        "Here is how to bake a delicious chocolate cake: mix flour and sugar. "
+        "You will need a clean bowl, two fresh eggs, a cup of cocoa powder, and some chocolate chips. "
+        "Preheat your oven to 350 degrees Fahrenheit, grease the pan, and bake for approximately 35 minutes.\n\n"
+        "Ensure fabric eula agreement is set to true in eula.txt file. "
+        "By changing eula=false to eula=true in this text file, you acknowledge that you accept the end user license agreement. "
+        "Without doing this, the server startup sequence will immediately exit and fail."
+    )
+    
+    hit = SearchHit(
+        chunk_id="chunk_1",
+        score=0.9,
+        source_path="instructions.txt",
+        title="Server Setup",
+        content=content,
+        summary="A guide to set up a server.",
+        language="txt",
+        chunk_type="text"
+    )
+
+    async def mock_embed(model, texts):
+        if texts == [query]:
+            return [[1.0, 0.0]]
+        return [
+            [0.9, 0.1],  # sec1 vector
+            [0.0, 1.0],  # sec2 vector
+            [0.9, 0.1],  # sec3 vector
+        ]
+
+    with patch("rag_local.embed.OllamaClient.embed", side_effect=mock_embed):
+        compressed_hits = await compress_context_with_embeddings(query, [hit], threshold=0.35)
+        
+    assert len(compressed_hits) == 1
+    compressed_hit = compressed_hits[0]
+    
+    assert "fabric server" in compressed_hit.content
+    assert "eula.txt" in compressed_hit.content
+    assert "chocolate cake" not in compressed_hit.content
+    assert "... [snipped less relevant code] ..." in compressed_hit.content

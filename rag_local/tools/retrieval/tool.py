@@ -241,3 +241,86 @@ async def hybrid_retrieve(query: str, *, top_k: int | None = None) -> RetrievalR
     embedding = (await client.embed(SETTINGS.ollama_embed_model, [query]))[0]
     hits = store.hybrid_search(query, embedding, top_k=top_k or SETTINGS.rag_top_k)
     return RetrievalResult(query=query, hits=hits)
+
+
+async def compress_context_with_embeddings(query: str, hits: list[SearchHit], top_n_snippets: int = 5, threshold: float = 0.35) -> list[SearchHit]:
+    """Compress retrieved hits by keeping only the most semantically relevant snippets of content."""
+    from rag_local.embed import OllamaClient
+    from rag_local.config import SETTINGS
+    import math
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if not hits:
+        return hits
+
+    client = OllamaClient()
+    try:
+        query_vecs = await client.embed(SETTINGS.ollama_embed_model, [query])
+        if not query_vecs:
+            return hits
+        query_vec = query_vecs[0]
+        
+        compressed_hits = []
+        for hit in hits:
+            content = hit.content or ""
+            sections = [s.strip() for s in content.split("\n\n") if s.strip()]
+            if not sections or len(content) < 500:
+                compressed_hits.append(hit)
+                continue
+                
+            section_vecs = await client.embed(SETTINGS.ollama_embed_model, sections)
+            if not section_vecs or len(section_vecs) != len(sections):
+                compressed_hits.append(hit)
+                continue
+                
+            scored_sections = []
+            for sec, sec_vec in zip(sections, section_vecs):
+                dot = sum(a * b for a, b in zip(query_vec, sec_vec))
+                norm_q = math.sqrt(sum(a * a for a in query_vec))
+                norm_s = math.sqrt(sum(a * a for a in sec_vec))
+                sim = dot / (norm_q * norm_s) if norm_q > 0 and norm_s > 0 else 0.0
+                if sim >= threshold:
+                    scored_sections.append((sim, sec))
+                    
+            scored_sections.sort(key=lambda x: x[0], reverse=True)
+            top_sections = scored_sections[:top_n_snippets]
+            
+            if top_sections:
+                ordered = sorted(top_sections, key=lambda x: sections.index(x[1]))
+                compressed_content = "\n\n... [snipped less relevant code] ...\n\n".join(sec for _, sec in ordered)
+                
+                compressed_hit = SearchHit(
+                    chunk_id=hit.chunk_id,
+                    score=hit.score,
+                    source_path=hit.source_path,
+                    title=hit.title,
+                    content=compressed_content,
+                    summary=hit.summary,
+                    language=hit.language,
+                    chunk_type=hit.chunk_type,
+                    start_line=hit.start_line,
+                    end_line=hit.end_line,
+                    metadata=hit.metadata
+                )
+                compressed_hits.append(compressed_hit)
+            else:
+                compressed_hit = SearchHit(
+                    chunk_id=hit.chunk_id,
+                    score=hit.score,
+                    source_path=hit.source_path,
+                    title=hit.title,
+                    content=f"No directly relevant code block found matching threshold. Summary: {hit.summary}",
+                    summary=hit.summary,
+                    language=hit.language,
+                    chunk_type=hit.chunk_type,
+                    start_line=hit.start_line,
+                    end_line=hit.end_line,
+                    metadata=hit.metadata
+                )
+                compressed_hits.append(compressed_hit)
+        return compressed_hits
+    except Exception as e:
+        logger.warning("[CompressContext] Context compression failed: %s", e)
+        return hits
