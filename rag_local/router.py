@@ -62,6 +62,10 @@ async def route_query(query: str, history: list[dict[str, str]] | None = None) -
             if route == "general":
                 route = "rag"
         
+        # Time-related query override: route to web_search so planner runs the time MCP tool
+        if any(w in lower for w in ["time", "clock", "date"]):
+            route = "web_search"
+        
         decision = RouteDecision(
             route=route,
             confidence=float(parsed.get("confidence", 0.5)),
@@ -85,7 +89,7 @@ async def route_query(query: str, history: list[dict[str, str]] | None = None) -
             route = "code_analysis" if any(word in lower for word in ["code", "bug", "function", "class", "repo"]) else "rag"
         elif any(word in lower for word in ["file", "repo", "code", "bug", "function", "class", "stack trace", "traceback"]):
             route = "code_analysis"
-        elif any(word in lower for word in ["news", "today", "latest", "current", "web", "internet"]):
+        elif any(word in lower for word in ["news", "today", "latest", "current", "web", "internet", "time", "clock", "date"]):
             route = "web_search"
         elif any(word in lower for word in ["document", "docs", "markdown", "rag", "retrieve"]):
             route = "rag"

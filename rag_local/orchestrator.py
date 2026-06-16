@@ -183,7 +183,7 @@ async def build_plan(state: RagState) -> ExecutionPlan:
 
     # ── Semantic tool selection: pre-filter to most relevant subset ─────────────
     if all_tools:
-        selected_tools = await select_tools(state.user_input, all_tools, top_k=14)
+        selected_tools = await select_tools(state.user_input, all_tools, top_k=8)
         tools_prompt = format_tools_prompt(selected_tools)
         tools_prompt += (
             "\n\nTo call any tool above set kind='mcp' and format query as JSON:\n"
@@ -664,6 +664,8 @@ Never just give up and explain the failure. Always attempt an alternative tool p
 
 
 async def synthesize(state: RagState, config: Any = None) -> str:
+    if state.route == "general":
+        return state.general_answer or "No response generated."
     client = OllamaClient()
     simplified_plan = ""
     if state.plan:

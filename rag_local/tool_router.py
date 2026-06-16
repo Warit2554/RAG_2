@@ -127,7 +127,17 @@ async def select_tools(
             scored.append((sim, tool))
 
         scored.sort(key=lambda x: x[0], reverse=True)
-        selected = [t for _, t in scored[:top_k]]
+
+        # Filter by similarity threshold to avoid loading irrelevant tools
+        threshold = 0.28
+        selected = [t for sim, t in scored if sim >= threshold]
+
+        # If no tools meet the threshold, fallback to the top 3 most similar tools
+        if not selected and scored:
+            selected = [t for _, t in scored[:3]]
+
+        # Cap the results to top_k
+        selected = selected[:top_k]
 
         logger.debug(
             "[ToolRouter] Selected %d/%d tools for query (top sim=%.3f)",

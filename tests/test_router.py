@@ -79,3 +79,23 @@ async def test_router_returns_confidence_between_0_and_1():
         mock_chat.return_value = _chat_response("rag", confidence=0.8)
         decision = await route_query("Explain what chunking.py does")
         assert 0.0 <= decision.decision.confidence <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_time_query_routes_to_web_search():
+    """Queries about time, clock, date must route to web_search."""
+    queries = ["What is the current time?", "Show me the clock", "What date is it today?"]
+    with patch("rag_local.router.OllamaClient.chat", new_callable=AsyncMock) as mock_chat:
+        mock_chat.return_value = _chat_response("general")
+        for q in queries:
+            decision = await route_query(q)
+            assert decision.decision.route == "web_search"
+
+
+@pytest.mark.asyncio
+async def test_fallback_router_time_goes_to_web_search():
+    """Fallback router should route time queries to web_search on exception."""
+    with patch("rag_local.router.OllamaClient.chat", new_callable=AsyncMock) as mock_chat:
+        mock_chat.side_effect = Exception("Ollama error")
+        decision = await route_query("What time is it now?")
+        assert decision.decision.route == "web_search"

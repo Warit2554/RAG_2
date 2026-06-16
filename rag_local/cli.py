@@ -823,12 +823,28 @@ class CliRepl:
     def log_conversation_event(self, msg: str) -> None:
         """Appends a raw text log message to the conversation's log file."""
         try:
-            from rag_local.config import WORKSPACE_DIR
-            nexus_dir = WORKSPACE_DIR / ".nexus"
+            from rag_local.config import PACKAGE_ROOT
+            nexus_dir = PACKAGE_ROOT / ".nexus" / "conversation"
             nexus_dir.mkdir(parents=True, exist_ok=True)
             log_file = nexus_dir / f"{self.conversation_id}.log"
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(msg + "\n")
+        except Exception:
+            pass
+
+    def log_system_event(self, level: str, msg: str) -> None:
+        """Appends a system, warning, or error message to /.nexus/system/system.log."""
+        try:
+            from rag_local.config import PACKAGE_ROOT
+            system_log_dir = PACKAGE_ROOT / ".nexus" / "system"
+            system_log_dir.mkdir(parents=True, exist_ok=True)
+            system_log_file = system_log_dir / "system.log"
+            
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+            log_line = f"{timestamp} - CliRepl - {level.upper()} - {msg}\n"
+            with open(system_log_file, "a", encoding="utf-8") as f:
+                f.write(log_line)
         except Exception:
             pass
 
@@ -987,6 +1003,7 @@ class CliRepl:
         global ACTIVE_THEME
         ACTIVE_THEME = load_theme()
         theme = ACTIVE_THEME
+        self.log_system_event("INFO", f"Loaded theme: {theme.name}")
 
         #print("\033[1;36m" + "─"*60)
         #print("NEXUS LOCAL RAG SYSTEM (Antigravity Engine)".center(60))
@@ -1052,6 +1069,7 @@ class CliRepl:
                     import uuid
                     self.conversation_id = uuid.uuid4().hex
                     print(f"{theme.secondary}[System]\033[0m Conversation history cleared.")
+                    self.log_system_event("INFO", "Conversation history cleared.")
                     continue
 
                 if query.startswith("/tools"):
@@ -1091,6 +1109,7 @@ class CliRepl:
                     SETTINGS.nexus_theme = theme.name
                     save_theme_setting(theme.name)
                     print(f"{theme.secondary}[System]{theme.text} Theme updated to: {theme.primary}{theme.name}\033[0m\n")
+                    self.log_system_event("INFO", f"Theme updated to: {theme.name}")
                     continue
 
                 if query == "/model":
@@ -1189,10 +1208,12 @@ class CliRepl:
                                 except ValueError:
                                     pass
                             print(f"{theme.secondary}[System]\033[0m Interactive mode set to: {mode}" + (f" (timeout={self.interactive_timeout}s)" if mode == "timeout" else ""))
+                            self.log_system_event("INFO", f"Interactive mode set to: {mode}" + (f" (timeout={self.interactive_timeout}s)" if mode == "timeout" else ""))
                         else:
                             print(f"\033[31m[Error]\033[0m Invalid interactive mode. Use: strict, timeout, or auto.")
                     else:
                         print(f"{theme.secondary}[System]\033[0m Current interactive mode: {self.interactive_mode}" + (f" (timeout={self.interactive_timeout}s)" if self.interactive_mode == "timeout" else ""))
+                        self.log_system_event("INFO", f"Current interactive mode: {self.interactive_mode}" + (f" (timeout={self.interactive_timeout}s)" if self.interactive_mode == "timeout" else ""))
                     print()
                     continue
 
@@ -1216,6 +1237,7 @@ class CliRepl:
                     
                     state_label = "\033[32mON\033[0m" if SETTINGS.verbose_mode else "\033[31mOFF\033[0m"
                     print(f"{theme.secondary}[System]\033[0m Verbose logging mode: {state_label}")
+                    self.log_system_event("INFO", f"Verbose logging mode: {state_label}")
                     print()
                     continue
 
@@ -1556,13 +1578,13 @@ class CliRepl:
                     self.history.append({"role": "user", "content": query})
                     self.history.append({"role": "assistant", "content": answer_text})
 
-                    # ── Save Conversation Log to /.nexus ─────────────────────
+                    # ── Save Conversation Log to /.nexus/conversation ─────────────────────
                     try:
                         import json as _json
                         from datetime import datetime
-                        from rag_local.config import WORKSPACE_DIR
+                        from rag_local.config import PACKAGE_ROOT
                         
-                        nexus_dir = WORKSPACE_DIR / ".nexus"
+                        nexus_dir = PACKAGE_ROOT / ".nexus" / "conversation"
                         nexus_dir.mkdir(parents=True, exist_ok=True)
                         
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -1666,8 +1688,9 @@ class CliRepl:
                                     self.log_conversation_event(f"  [{msg.get('role', 'unknown').upper()}]:\n{msg.get('content')}")
                                 self.log_conversation_event(f"  [RESPONSE]:\n{call['response']}")
                                 self.log_conversation_event("-" * 40)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        import logging
+                        logging.getLogger("CliRepl").exception("Failed to save conversation log to file")
                 print("\n")
 
             except KeyboardInterrupt:
@@ -1682,6 +1705,7 @@ class CliRepl:
                 
         # ── Clean exit sequence ────────────────────────────────────
         print(f"\n{theme.secondary}[System]\033[0m Shutting down...")
+        self.log_system_event("INFO", "Shutting down...")
 
         import io
 
@@ -1699,8 +1723,9 @@ class CliRepl:
             # Stop all MCP server subprocesses (inline, while event loop is live)
             try:
                 await asyncio.wait_for(mcp_manager.stop_all(), timeout=3.0)
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger("CliRepl").exception("Failed to stop MCP servers")
 
             # 3. Unload Ollama models in parallel (max 3s total)
             active_models = {
@@ -1711,6 +1736,7 @@ class CliRepl:
             }
             sys.stderr = _real_stderr  # restore before printing
             print(f"{theme.secondary}[System]\033[0m Unloading Ollama models...")
+            self.log_system_event("INFO", "Unloading Ollama models...")
             sys.stderr = open(os.devnull, "w")
             try:
                 await asyncio.wait_for(
@@ -1720,22 +1746,26 @@ class CliRepl:
                     ),
                     timeout=3.0,
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger("CliRepl").exception("Failed to unload Ollama models")
 
         try:
             await asyncio.wait_for(_shutdown(), timeout=5.0)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("CliRepl").exception("Shutdown gathering failed")
         finally:
             # Always restore stderr before the final message
             try:
                 sys.stderr.close()
-            except Exception:
-                pass
+            except Exception as e:
+                import logging
+                logging.getLogger("CliRepl").exception("Failed to close stderr")
             sys.stderr = _real_stderr
 
         print(f"{theme.secondary}[System]\033[0m Bye!\033[0m")
+        self.log_system_event("INFO", "Bye!")
 
 
 def _install_noise_filters() -> None:
@@ -1815,7 +1845,34 @@ def _install_noise_filters() -> None:
     _sys2.stderr = _FilteredStderr(_sys2.stderr)
 
 
+def _setup_system_logging() -> None:
+    """Configures the root python logger to save Warnings, Errors and Critical logs to /.nexus/system/system.log."""
+    import logging
+    from rag_local.config import PACKAGE_ROOT
+    
+    system_log_dir = PACKAGE_ROOT / ".nexus" / "system"
+    system_log_dir.mkdir(parents=True, exist_ok=True)
+    system_log_file = system_log_dir / "system.log"
+    
+    root_logger = logging.getLogger()
+    
+    # Avoid duplicate file handlers if initialized multiple times
+    for handler in list(root_logger.handlers):
+        if isinstance(handler, logging.FileHandler) and handler.baseFilename == str(system_log_file.resolve()):
+            return
+            
+    handler = logging.FileHandler(system_log_file, encoding="utf-8")
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    handler.setLevel(logging.WARNING)
+    root_logger.addHandler(handler)
+    
+    if root_logger.level > logging.WARNING:
+        root_logger.setLevel(logging.WARNING)
+
+
 def main() -> None:
+    _setup_system_logging()
     _install_noise_filters()
     repl = CliRepl()
     try:

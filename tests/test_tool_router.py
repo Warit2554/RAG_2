@@ -55,6 +55,38 @@ async def test_select_tools_returns_subset():
 
 
 @pytest.mark.asyncio
+async def test_select_tools_similarity_filtering():
+    """select_tools must filter out tools below threshold, returning only highly relevant ones."""
+    from rag_local.tool_router import select_tools
+    import rag_local.tool_router as tr
+    tr._tool_embed_cache.clear()
+    tr._all_tools_snapshot.clear()
+
+    with patch("rag_local.embed.OllamaClient") as MockClient:
+        instance = MockClient.return_value
+        
+        def mock_embed(model, texts):
+            # 5 tools
+            if len(texts) == 5:
+                return [
+                    [1.0, 0.0, 0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0, 0.0, 0.0],
+                    [0.0, 0.0, 0.0, 1.0, 0.0],
+                    [0.0, 0.0, 0.0, 0.0, 1.0]
+                ]
+            # query
+            return [[0.0, 0.0, 1.0, 0.0, 0.0]]
+            
+        instance.embed = AsyncMock(side_effect=mock_embed)
+        result = await select_tools("query for search", SAMPLE_TOOLS, top_k=3)
+        
+    # Only the 'search' tool should meet the threshold (0.28)
+    assert len(result) == 1
+    assert result[0]["name"] == "search"
+
+
+@pytest.mark.asyncio
 async def test_select_tools_returns_all_when_catalogue_small():
     """When catalogue size ≤ top_k, all tools are returned without embedding."""
     from rag_local.tool_router import select_tools

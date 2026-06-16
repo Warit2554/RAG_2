@@ -185,9 +185,26 @@ async def router_node(state: GraphState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def general_node(state: GraphState) -> dict[str, Any]:
-    return {
-        "general_answer": "This query does not require local retrieval. Ask for repo analysis, document lookup, or web search when needed.",
-    }
+    try:
+        client = OllamaClient()
+        messages = build_messages(
+            "You are a helpful and concise assistant. Answer the user's question directly.",
+            state["user_input"],
+            state.get("chat_history")
+        )
+        answer = await client.chat(
+            SETTINGS.ollama_chat_model,
+            messages,
+            temperature=0.7,
+            keep_alive=SETTINGS.rag_keep_alive,
+        )
+        return {
+            "general_answer": answer,
+        }
+    except Exception as e:
+        return {
+            "general_answer": f"Error generating answer: {e}",
+        }
 
 
 # ---------------------------------------------------------------------------

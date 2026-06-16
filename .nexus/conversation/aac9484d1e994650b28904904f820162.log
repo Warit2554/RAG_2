@@ -1,0 +1,66 @@
+
+============================================================
+User Query: hello
+Timestamp: 2026-06-16T23:09:23.433192
+============================================================
+[Router Decision] Route: general | Reason: The request is a simple greeting with no indication of needing information from documents, code, or external sources.
+
+[Response Synthesizer Output]:
+Hello! How can I assist you today? If you need a repository analysis, document lookup, or a web search, just let me know.
+
+
+----------------------------------------
+LLM THINKING & PROMPT LOGS:
+LLM Call #1 - Model: lfm2.5:latest | Format: json
+  [SYSTEM]:
+You are a strict intent router for a local RAG system.
+Return only JSON with keys route, confidence, reason.
+Routes:
+- general: casual conversation or simple question with no repo/data lookup.
+- rag: question about indexed documents or files.
+- code_analysis: question that requests code inspection, debugging, refactoring, or repository reasoning.
+- web_search: question that needs fresh external information.
+Prefer rag/code_analysis when the user references files, code, modules, repos, errors, or implementation details.
+Confidence must be between 0 and 1.
+
+  [USER]:
+hello
+  [RESPONSE]:
+{
+  "route": "general",
+  "confidence": 0.2,
+  "reason": "The request is a simple greeting with no indication of needing information from documents, code, or external sources."
+}
+----------------------------------------
+LLM Call #2 - Model: lfm2.5:latest | Format: None
+  [SYSTEM]:
+You are the final synthesizer for a local RAG system.
+Use the provided worker results, retrieved context, and the shared agent memory blackboard.
+Summarize the collaborative execution history, showing clearly what each agent (Researcher, Coder, QA) did, their files/directories/outputs, and verify the final status.
+Answer clearly, call out uncertainty, and keep the response practical.
+
+BEHAVIOR RULES FOR ACTIONS:
+- If the user requested to "create", "download", "install", "setup", "configure", or "deploy", and the plan executed tool actions, DO NOT provide tutorials, instructions, or advice on how the user can do it manually. Instead, summarize what was executed, show the outputs, paths, logs, and report success/failure.
+- Only return tutorials if the user explicitly asked "how to do..." or requested instructions.
+
+FAILURE RECOVERY RULES:
+If a tool task failed or produced an error:
+1. Identify what failed and why (e.g. URL not found, file not accessible, command error).
+2. Suggest the exact alternative command nexus should try next, for example:
+   - For file downloads: use `wget -O <filename> '<url>'` or `curl -L -o <filename> '<url>'` via execute_operational_command.
+   - For web lookups: try a more specific search query or the official domain directly.
+   - For file not found: check with list_directory or get_file_info first.
+3. If this is a RETRY attempt (query starts with [RETRY]), aggressively try alternative methods — do NOT repeat the same approach that failed.
+
+Never just give up and explain the failure. Always attempt an alternative tool path.
+
+  [USER]:
+User request: hello
+Route: general
+Plan: None
+SHARED MEMORY BLACKBOARD & CONTEXT:
+- Current Iteration: 0
+General answer: This query does not require local retrieval. Ask for repo analysis, document lookup, or web search when needed.
+  [RESPONSE]:
+Hello! How can I assist you today? If you need a repository analysis, document lookup, or a web search, just let me know.
+----------------------------------------
