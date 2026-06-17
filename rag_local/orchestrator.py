@@ -73,13 +73,17 @@ ACTION DETECTION AND PRIORITIZATION RULES:
 - Detect action verbs in user query: create, install, download, setup, configure, deploy.
 - If the query contains action verbs, the planner MUST generate direct, executable tasks, NOT advice or information-gathering/tutorial tasks.
 - If the setup requires running a specific application, service, binary, library, or jar file (such as a Minecraft server jar, Java JDK, or database binary), the plan MUST include tasks to first search for the official download page/link, download it using operations/execute_operational_command (curl/wget), install/extract it, and then launch the service. Never assume binaries/jar files are already present unless confirmed in the world state.
+- PRIORITY RULES FOR SPECIALIZED MCP TOOLS:
+  - ALWAYS check 'Available MCP tools' first. If there is a specialized, domain-specific tool that directly fits the user's intent (e.g. `time/get_current_time` or `time/convert_time` for clock/timezone queries), you MUST use that specialized tool directly.
+  - DO NOT generate tasks to search the web (duckduckgo) or execute curl/wget commands to retrieve information that can be obtained directly from an available specialized tool.
 - Prioritize using tools in this order:
-  1. filesystem (e.g. read_file, write_file, list_directory, get_file_info)
-  2. operations (with curl/wget to download)
-  3. operations / desktop-commander (to execute terminal commands)
-  4. docker (to manage containers)
-  5. ssh (to run remote commands)
-  6. duckduckgo / fetch / playwright (only if information/URL is missing)
+  1. Specialized domain-specific tools (e.g. time tools, database queries) if matching the request intent
+  2. filesystem (e.g. read_file, write_file, list_directory, get_file_info)
+  3. operations (with curl/wget to download)
+  4. operations / desktop-commander (to execute terminal commands)
+  5. docker (to manage containers)
+  6. ssh (to run remote commands)
+  7. duckduckgo / fetch / playwright (only if information/URL is missing)
 - Web search must NOT be the first action for common tasks, EXCEPT when downloading a file and the exact, official download URL is unknown. In that case, perform a web search and fetch/playwright tasks first to find the real URL rather than guessing it.
 
 Example Output:
@@ -103,9 +107,11 @@ Example Output:
 }
 
 CRITICAL RULES:
-- Use kind 'mcp' for ALL tool calls (web search, file operations, git, code, browser, etc.).
-- Use kind 'retrieve' ONLY for searching local indexed documents.
-- Do NOT use any other kind value.
+- ALWAYS return a valid JSON plan with the top-level keys: objective, constraints, success_criteria, tasks, response_style, confidence.
+- NEVER return a raw/unwrapped tool call JSON or single task command on its own. EVERY action or tool call MUST be wrapped as a task dictionary inside the "tasks" list.
+- Use kind 'mcp' for ALL tool calls (e.g. files, operations, time, etc.).
+- Use kind 'retrieve' ONLY for searching locally indexed files/documents in the codebase.
+- Match server_name and tool_name from the 'Available MCP tools' list EXACTLY. Do not guess or modify them (e.g. use "server_name": "time", NOT "server_name": "worldtimeapi").
 - Do NOT output tutorials or advice — execute directly.
 """
 
@@ -295,6 +301,13 @@ async def build_plan(state: RagState) -> ExecutionPlan:
                     return json.dumps(q)
                 return str(q)
 
+            def _to_list(val: Any) -> list[str]:
+                if isinstance(val, list):
+                    return [str(x) for x in val]
+                if isinstance(val, str):
+                    return [val]
+                return []
+
             tasks = []
             for idx, item in enumerate(parsed.get("tasks", [])[:SETTINGS.rag_plan_max_tasks], start=1):
                 if not isinstance(item, dict):
@@ -314,19 +327,21 @@ async def build_plan(state: RagState) -> ExecutionPlan:
                         query=q_val,
                         priority=int(item.get("priority", idx)),
                         assigned_agent=raw_agent,
-                        depends_on=list(item.get("depends_on", [])),
+                        depends_on=_to_list(item.get("depends_on")),
                         can_parallel=bool(item.get("can_parallel", True)),
-                        artifact_targets=list(item.get("artifact_targets", [])),
-                        verification_rules=list(item.get("verification_rules", [])),
+                        artifact_targets=_to_list(item.get("artifact_targets")),
+                        verification_rules=_to_list(item.get("verification_rules")),
                     )
                 )
             if tasks:
+                sc_val = _to_list(parsed.get("success_criteria"))
+                c_val = _to_list(parsed.get("constraints"))
                 return ExecutionPlan(
                     objective=str(parsed.get("objective", state.user_input)),
                     tasks=tasks,
                     response_style=str(parsed.get("response_style", "concise")),
-                    success_criteria=parsed.get("success_criteria", []),
-                    constraints=parsed.get("constraints", []),
+                    success_criteria=sc_val,
+                    constraints=c_val,
                 )
             else:
                 logging.warning("[build_plan] Plan contains no valid tasks.")

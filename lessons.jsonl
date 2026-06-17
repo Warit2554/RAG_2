@@ -64,3 +64,13 @@
 {"ts": "2026-06-16T16:24:44.064840+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
 {"ts": "2026-06-16T16:25:37.909315+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
 {"ts": "2026-06-16T16:25:37.910069+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-16T16:40:17.950967+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-16T16:40:17.951821+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-16T16:48:03.545381+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-16T16:48:03.546141+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-16T16:56:29.461981+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-16T16:56:29.462588+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-16T17:01:28.606391+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-16T17:01:28.607018+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}
+{"ts": "2026-06-16T17:04:44.243398+00:00", "query": "do a", "tasks": [{"name": "task_a", "kind": "mcp"}], "success": false, "error": "failed_a"}
+{"ts": "2026-06-16T17:04:44.244530+00:00", "query": "do a", "tasks": [{"name": "task_b", "kind": "mcp"}], "success": true, "error": ""}

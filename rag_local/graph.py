@@ -87,7 +87,10 @@ async def router_node(state: GraphState) -> dict[str, Any]:
     route = decision.decision.route
     reason = decision.decision.reason
 
-    if route != "general" and not state.get("clarification_response"):
+    # Programmatic bypass of clarification for simple informational lookups (e.g., time/date/clock/timezone)
+    lower_input = state["user_input"].lower()
+    is_time_query = any(w in lower_input for w in ["time", "clock", "date", "timezone"])
+    if route != "general" and not state.get("clarification_response") and not is_time_query:
         from pathlib import Path
         from .config import WORKSPACE_DIR
         workspace = str(WORKSPACE_DIR)
@@ -96,6 +99,9 @@ async def router_node(state: GraphState) -> dict[str, Any]:
         system_prompt = (
             "You are a smart clarification agent for a local AI assistant (called Nexus).\n"
             "Your job: read the user's query and decide if any critical parameter is MISSING or AMBIGUOUS.\n\n"
+            "CRITICAL EXCLUSION RULE:\n"
+            "- Do NOT trigger clarification for simple lookup, utility, or informational queries (e.g. asking for the current time, timezone info, current date, weather, or simple facts).\n"
+            "- Setting clarification_needed = true is ONLY for complex tasks that download/save files, perform refactoring/editing of code, or require targeting a specific file path or project directory which is completely unspecified.\n\n"
             "Ambiguity examples that REQUIRE clarification (clarification_needed = true):\n"
             "- Save/download tasks: WHERE to save (path, directory)\n"
             "- Code analysis: WHICH file, module, class, or function to inspect\n"
@@ -108,6 +114,7 @@ async def router_node(state: GraphState) -> dict[str, Any]:
             "- Ambiguous subject: 'the code' (which file?), 'the image' (from where?), 'my drive' (which folder?)\n\n"
             "Clear queries that do NOT need clarification (clarification_needed = false):\n"
             "- Simple greetings, casual questions\n"
+            "- Queries asking for the current time, clock, date, or simple timezone offsets\n"
             "- Queries with all required details already specified\n"
             "- Basic factual lookups\n\n"
             "When clarification IS needed, construct:\n"
@@ -282,11 +289,18 @@ async def researcher_node(state: GraphState) -> dict[str, Any]:
         
     shared_memory.setdefault("blackboard", []).append("[Researcher] Beginning research tasks...")
     
-    from .orchestrator import execute_task
+    from .executor import execute_single_task
+    metrics = state.get("metrics")
+    if not metrics:
+        metrics = ExecutionMetrics()
     results = []
     for t in sorted(researcher_tasks, key=lambda x: x.priority):
         shared_memory["blackboard"].append(f"[Researcher] Running task '{t.name}': {t.query}")
-        res = await execute_task(t, state=RagState(**{k: v for k, v in state.items() if k in RagState.model_fields and k != "shared_memory"}))
+        res = await execute_single_task(
+            t,
+            state=RagState(**{k: v for k, v in state.items() if k in RagState.model_fields and k != "shared_memory"}),
+            metrics=metrics,
+        )
         results.append(res)
         if res.success:
             summary = res.summary or ""
@@ -306,7 +320,8 @@ async def researcher_node(state: GraphState) -> dict[str, Any]:
     return {
         "web_results": list(existing_web) + new_web,
         "code_results": list(existing_code) + new_code,
-        "shared_memory": shared_memory
+        "shared_memory": shared_memory,
+        "metrics": metrics,
     }
 
 
@@ -327,7 +342,10 @@ async def coder_node(state: GraphState) -> dict[str, Any]:
         
     shared_memory.setdefault("blackboard", []).append("[Coder] Beginning implementation/coding tasks...")
     
-    from .orchestrator import execute_task
+    from .executor import execute_single_task
+    metrics = state.get("metrics")
+    if not metrics:
+        metrics = ExecutionMetrics()
     results = []
     
     # Pack shared memory into state for context awareness
@@ -337,7 +355,7 @@ async def coder_node(state: GraphState) -> dict[str, Any]:
 
     for t in sorted(coder_tasks, key=lambda x: x.priority):
         shared_memory["blackboard"].append(f"[Coder] Running task '{t.name}': {t.query}")
-        res = await execute_task(t, state=rag_state)
+        res = await execute_single_task(t, state=rag_state, metrics=metrics)
         results.append(res)
         if res.success:
             summary = res.summary or ""
@@ -373,7 +391,8 @@ async def coder_node(state: GraphState) -> dict[str, Any]:
         "web_results": list(existing_web) + new_web,
         "code_results": list(existing_code) + new_code,
         "shared_memory": shared_memory,
-        "artifacts": artifacts
+        "artifacts": artifacts,
+        "metrics": metrics,
     }
 
 
@@ -395,23 +414,23 @@ async def qa_node(state: GraphState) -> dict[str, Any]:
     qa_reports = []
     has_failures = False
     
+    agent = VerificationAgent()
     for t in plan.tasks:
         result = next((r for r in all_results if r.task_name == t.name), None)
         if not result:
             continue
         
-        for rule in t.verification_rules:
-            passed, msg = await VerificationAgent.check(rule, result.summary)
+        if not result.success:
+            qa_reports.append(f"[FAIL] Task '{t.name}' execution failed: {result.summary[:200] if result.summary else 'No output'}")
+            has_failures = True
+        else:
+            passed, msg = await agent.check(t, result)
             if passed:
-                qa_reports.append(f"[PASS] Task '{t.name}' rule '{rule}': {msg}")
+                qa_reports.append(f"[PASS] Task '{t.name}': {msg}")
             else:
-                qa_reports.append(f"[FAIL] Task '{t.name}' rule '{rule}': {msg}")
+                qa_reports.append(f"[FAIL] Task '{t.name}' verification failed: {msg}")
                 has_failures = True
                 result.success = False
-                
-        if not result.success:
-            qa_reports.append(f"[FAIL] Task '{t.name}' execution failed: {result.summary[:200]}")
-            has_failures = True
             
     if not qa_reports:
         for res in all_results:

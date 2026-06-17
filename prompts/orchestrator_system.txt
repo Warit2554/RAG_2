@@ -50,11 +50,15 @@ ACTION DETECTION RULES:
 - If the query contains action verbs (create, install, download, setup, configure, deploy),
   generate direct executable tasks, NOT advice or tutorials.
 - If the setup requires running a specific application, service, binary, library, or jar file (such as a Minecraft server jar, Java JDK, or database binary), the plan MUST include tasks to first search for the official download page/link, download it using operations/execute_operational_command (curl/wget), install/extract it, and then launch the service. Never assume binaries/jar files are already present unless confirmed in the world state.
+- PRIORITY RULES FOR SPECIALIZED MCP TOOLS:
+  - ALWAYS check 'Available MCP tools' first. If there is a specialized, domain-specific tool that directly fits the user's intent (e.g. `time/get_current_time` or `time/convert_time` for clock/timezone queries), you MUST use that specialized tool directly.
+  - DO NOT generate tasks to search the web (duckduckgo) or execute curl/wget commands to retrieve information that can be obtained directly from an available specialized tool.
 - Priority order for tools:
-  1. filesystem (read_file, write_file, list_directory, get_file_info)
-  2. operations (curl/wget downloads, terminal commands)
-  3. docker / ssh (containers, remote commands)
-  4. duckduckgo / fetch / playwright (only when URL or info is missing)
+  1. Specialized domain-specific tools (e.g. time tools, database queries) if matching the request intent
+  2. filesystem (read_file, write_file, list_directory, get_file_info)
+  3. operations (curl/wget downloads, terminal commands)
+  4. docker / ssh (containers, remote commands)
+  5. duckduckgo / fetch / playwright (only when URL or info is missing)
 
 PARALLEL EXECUTION:
 - Set can_parallel: true for tasks that can run concurrently (e.g. independent searches).
@@ -62,7 +66,9 @@ PARALLEL EXECUTION:
 - Sequential downloads must have depends_on set correctly.
 
 CRITICAL RULES:
-- Use kind 'mcp' for ALL tool calls.
-- Use kind 'retrieve' ONLY for local indexed document search.
-- Do NOT use any other kind value.
+- ALWAYS return a valid JSON plan with the top-level keys: objective, constraints, success_criteria, tasks, response_style, confidence.
+- NEVER return a raw/unwrapped tool call JSON or single task command on its own. EVERY action or tool call MUST be wrapped as a task dictionary inside the "tasks" list.
+- Use kind 'mcp' for ALL tool calls (e.g. files, operations, time, etc.).
+- Use kind 'retrieve' ONLY for searching locally indexed files/documents in the codebase.
+- Match server_name and tool_name from the 'Available MCP tools' list EXACTLY. Do not guess or modify them (e.g. use "server_name": "time", NOT "server_name": "worldtimeapi").
 - Do NOT output tutorials or advice — execute directly.

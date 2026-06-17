@@ -55,7 +55,7 @@ def _tool_text(tool: dict[str, Any]) -> str:
     name = tool.get("name", "")
     desc = (tool.get("description") or "").strip().replace("\n", " ")[:200]
     # Include parameter names if present
-    schema = tool.get("inputSchema") or {}
+    schema = tool.get("input_schema") or tool.get("inputSchema") or {}
     props = list((schema.get("properties") or {}).keys())
     param_hint = " params: " + ", ".join(props[:6]) if props else ""
     return f"{server}/{name}: {desc}{param_hint}"
@@ -168,7 +168,7 @@ def format_tools_prompt(tools: list[dict[str, Any]]) -> str:
         server = tool.get("server_name", "unknown")
         name = tool.get("name", "?")
         desc = (tool.get("description") or "").strip().replace("\n", " ")[:120]
-        schema = tool.get("inputSchema") or {}
+        schema = tool.get("input_schema") or tool.get("inputSchema") or {}
         props = list((schema.get("properties") or {}).keys())
         required = schema.get("required") or []
 
