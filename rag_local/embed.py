@@ -56,6 +56,12 @@ class OllamaClient:
             "temperature": temperature,
             "stream": stream,
         }
+        options = {}
+        if hasattr(SETTINGS, "ollama_num_ctx") and SETTINGS.ollama_num_ctx:
+            options["num_ctx"] = SETTINGS.ollama_num_ctx
+        if options:
+            payload["options"] = options
+
         if keep_alive:
             payload["keep_alive"] = keep_alive
         if format:
@@ -93,6 +99,12 @@ class OllamaClient:
             "temperature": temperature,
             "stream": True,
         }
+        options = {}
+        if hasattr(SETTINGS, "ollama_num_ctx") and SETTINGS.ollama_num_ctx:
+            options["num_ctx"] = SETTINGS.ollama_num_ctx
+        if options:
+            payload["options"] = options
+
         if keep_alive:
             payload["keep_alive"] = keep_alive
         if format:

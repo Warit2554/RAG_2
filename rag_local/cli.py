@@ -170,6 +170,7 @@ ACTIVE_THEME = THEMES[4]
 SUGGESTIONS = [
     ("/model", "Select Ollama LLM chat model"),
     ("/embedding", "Select Ollama embedding model"),
+    ("/context", "Select Ollama model context length"),
     ("/theme", "Select CLI color theme"),
     ("/tools", "List all available MCP tools"),
     ("/prompts", "List and manage prompt registry"),
@@ -1189,6 +1190,42 @@ class CliRepl:
                     SETTINGS.ollama_embed_model = selected
                     save_env_setting("OLLAMA_EMBED_MODEL", selected)
                     print(f"{theme.secondary}[Embedding Selection]\033[0m Embedding model updated to: \033[1m{selected}\033[0m\n")
+                    continue
+
+                if query == "/context":
+                    context_options = [
+                        ("1kb (1024 tokens)", 1024),
+                        ("2kb (2048 tokens)", 2048),
+                        ("4kb (4096 tokens)", 4096),
+                        ("8kb (8192 tokens)", 8192),
+                        ("16kb (16384 tokens)", 16384),
+                        ("32kb (32768 tokens)", 32768),
+                        ("64kb (65536 tokens)", 65536),
+                        ("128kb (131072 tokens)", 131072),
+                        ("256kb (262144 tokens)", 262144),
+                        ("512kb (524288 tokens)", 524288),
+                    ]
+                    labels = [opt[0] for opt in context_options]
+                    
+                    # Find current default index
+                    current_ctx = SETTINGS.ollama_num_ctx
+                    current_idx = 2  # Default to 4kb if not matched
+                    for idx, opt in enumerate(context_options):
+                        if opt[1] == current_ctx:
+                            current_idx = idx
+                            break
+                            
+                    idx = interactive_select(
+                        labels,
+                        "Use Arrow Up/Down & Enter to select model context length:",
+                        default_index=current_idx,
+                        theme=theme
+                    )
+                    selected_label, selected_val = context_options[idx]
+                    
+                    SETTINGS.ollama_num_ctx = selected_val
+                    save_env_setting("OLLAMA_NUM_CTX", str(selected_val))
+                    print(f"{theme.secondary}[Context Selection]\033[0m Model context length updated to: \033[1m{selected_label}\033[0m\n")
                     continue
 
                 if query.startswith("/interactive"):

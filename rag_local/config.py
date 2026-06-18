@@ -31,6 +31,7 @@ class Settings:
     ollama_router_model: str = _env("OLLAMA_ROUTER_MODEL", "llama3.1:8b")
     ollama_orchestrator_model: str = _env("OLLAMA_ORCHESTRATOR_MODEL", "llama3.1:8b")
     ollama_embed_model: str = _env("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+    ollama_num_ctx: int = int(_env("OLLAMA_NUM_CTX", "4096"))
     qdrant_url: str = _env("QDRANT_URL", "http://localhost:6333")
     qdrant_collection: str = _env("QDRANT_COLLECTION", "rag_local_chunks")
     searxng_url: str = _env("SEARXNG_URL", "http://localhost:8080")

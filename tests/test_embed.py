@@ -167,3 +167,28 @@ async def test_compress_context_with_embeddings():
     assert "eula.txt" in compressed_hit.content
     assert "chocolate cake" not in compressed_hit.content
     assert "... [snipped less relevant code] ..." in compressed_hit.content
+
+
+@pytest.mark.asyncio
+async def test_chat_passes_num_ctx_options():
+    """chat() should pass the configured OLLAMA_NUM_CTX inside options block."""
+    from rag_local.config import SETTINGS
+    
+    with (
+        patch.object(SETTINGS, "ollama_num_ctx", 8192),
+        patch("rag_local.embed.httpx.AsyncClient") as MockClient
+    ):
+        instance = MockClient.return_value.__aenter__.return_value
+        fake_resp = _make_response(200, {"message": {"content": "ok"}})
+        instance.post = AsyncMock(return_value=fake_resp)
+        
+        client = OllamaClient()
+        await client.chat("model_name", [{"role": "user", "content": "hi"}])
+        
+        # Verify JSON payload
+        called_args = instance.post.call_args
+        assert called_args is not None
+        payload = called_args[1]["json"]
+        assert "options" in payload
+        assert payload["options"]["num_ctx"] == 8192
+

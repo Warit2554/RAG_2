@@ -85,3 +85,5 @@
 {"ts": "2026-06-16T17:09:25.312190+00:00", "event": "retry", "task": "extract_time_from_json", "attempt": 2}
 {"ts": "2026-06-16T17:09:27.562696+00:00", "event": "retry", "task": "extract_time_from_json", "attempt": 3}
 {"ts": "2026-06-16T17:09:30.938256+00:00", "event": "task_done", "task": "extract_time_from_json", "success": false, "healed": false, "elapsed_ms": 7126.3}
+{"ts": "2026-06-18T15:15:32.309547+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
+{"ts": "2026-06-18T15:15:58.123359+00:00", "event": "cache_hit", "task": "search1", "server": "duckduckgo", "tool": "search"}
